@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# agent-log — append a JSONL event to the agent events log
+# Usage: agent-log --events <path> --event-type <type> [--field key=value ...]
+#
+# Example:
+#   agent-log --events .claude/agent-events.jsonl \
+#     --event-type task_started \
+#     --field task_id=phase4-fw \
+#     --field "task_text=Add cook_profile_t struct"
+
+set -euo pipefail
+
+EVENTS_FILE=""
+EVENT_TYPE=""
+declare -A FIELDS
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --events)    EVENTS_FILE="$2"; shift 2 ;;
+    --event-type) EVENT_TYPE="$2"; shift 2 ;;
+    --field)
+      KEY="${2%%=*}"
+      VAL="${2#*=}"
+      FIELDS["$KEY"]="$VAL"
+      shift 2
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+[[ -z "$EVENTS_FILE" ]] && { echo "--events required" >&2; exit 1; }
+[[ -z "$EVENT_TYPE" ]] && { echo "--event-type required" >&2; exit 1; }
+
+# Build JSON object
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+JSON="{\"event_type\":\"${EVENT_TYPE}\",\"timestamp\":\"${TIMESTAMP}\""
+
+for KEY in "${!FIELDS[@]}"; do
+  VAL="${FIELDS[$KEY]}"
+  # Escape double quotes in value
+  VAL="${VAL//\"/\\\"}"
+  JSON+=",\"${KEY}\":\"${VAL}\""
+done
+
+JSON+="}"
+
+mkdir -p "$(dirname "$EVENTS_FILE")"
+echo "$JSON" >> "$EVENTS_FILE"
