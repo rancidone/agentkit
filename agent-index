@@ -436,6 +436,10 @@ def cmd_pack(args: argparse.Namespace) -> int:
             "worker_allowlist_profile": "lean-code-edit",
             "deny_high_cost_worker_ops": True,
             "prefer_symbol_blocks": bool(cfg.get("context", {}).get("prefer_symbol_blocks", True)),
+            "planner_required_for_discovery": True,
+            "force_task_pack_before_worker": True,
+            "worker_allowed_read_modes": ["chunk", "symbol"],
+            "max_read_chunk_lines": int(cfg.get("context", {}).get("max_read_chunk_lines", 120)),
         },
     }
     if args.out:

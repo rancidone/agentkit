@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""Strict telemetry check for low-token, chunk-first agent workflows."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+from agentkit_common import load_repo_config, repo_root
+
+
+def _abs_repo(path: str) -> str:
+    return os.path.abspath(path)
+
+
+def _within_repo(repo_abs: str, cwd: str | None) -> bool:
+    if not cwd:
+        return False
+    cwd_abs = os.path.abspath(cwd)
+    return cwd_abs == repo_abs or cwd_abs.startswith(repo_abs + os.sep)
+
+
+def _parse_isoish(ts: str | None) -> float | None:
+    if not ts:
+        return None
+    try:
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return dt.datetime.fromisoformat(ts).timestamp()
+    except Exception:
+        return None
+
+
+def _iter_project_logs(claude_home: str):
+    root = Path(claude_home) / "projects"
+    if not root.is_dir():
+        return
+    for path in root.rglob("*.jsonl"):
+        yield path
+
+
+def _read_events(
+    repo_abs: str,
+    claude_home: str,
+    cutoff_ts: float,
+    max_full_read_file_bytes: int,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "tokens": {
+            "input": 0,
+            "output": 0,
+            "cache_read": 0,
+            "cache_create": 0,
+            "total": 0,
+        },
+        "tool_calls": 0,
+        "tools": {},
+        "read_calls": 0,
+        "read_chunked": 0,
+        "read_full": 0,
+        "read_full_existing": 0,
+        "read_full_bytes_total": 0,
+        "read_full_max_bytes": 0,
+        "read_full_over_limit": 0,
+        "todowrite_calls": 0,
+        "usage_events": 0,
+    }
+
+    seen_usage: set[tuple[Any, ...]] = set()
+
+    for log_path in _iter_project_logs(claude_home):
+        try:
+            with open(log_path, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if not _within_repo(repo_abs, obj.get("cwd")):
+                        continue
+
+                    ts = _parse_isoish(obj.get("timestamp"))
+                    if ts is not None and ts < cutoff_ts:
+                        continue
+
+                    msg = obj.get("message") or {}
+                    usage = msg.get("usage") or {}
+                    if usage:
+                        usage_key = (
+                            obj.get("uuid"),
+                            obj.get("sessionId"),
+                            obj.get("timestamp"),
+                            int(usage.get("input_tokens", 0) or 0),
+                            int(usage.get("output_tokens", 0) or 0),
+                            int(usage.get("cache_read_input_tokens", 0) or 0),
+                            int(
+                                usage.get("cache_creation_input_tokens", 0)
+                                or (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens", 0)
+                                or (usage.get("cache_creation") or {}).get("ephemeral_5m_input_tokens", 0)
+                                or 0
+                            ),
+                        )
+                        if usage_key not in seen_usage:
+                            seen_usage.add(usage_key)
+                            out["usage_events"] += 1
+                            out["tokens"]["input"] += usage_key[3]
+                            out["tokens"]["output"] += usage_key[4]
+                            out["tokens"]["cache_read"] += usage_key[5]
+                            out["tokens"]["cache_create"] += usage_key[6]
+
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+
+                    for part in content:
+                        if not isinstance(part, dict) or part.get("type") != "tool_use":
+                            continue
+                        name = str(part.get("name") or "")
+                        if not name:
+                            continue
+                        out["tool_calls"] += 1
+                        out["tools"][name] = int(out["tools"].get(name, 0)) + 1
+
+                        if name == "TodoWrite":
+                            out["todowrite_calls"] += 1
+
+                        if name != "Read":
+                            continue
+
+                        out["read_calls"] += 1
+                        inp = part.get("input") or {}
+                        offset = inp.get("offset")
+                        limit = inp.get("limit")
+                        if offset is not None or limit is not None:
+                            out["read_chunked"] += 1
+                            continue
+
+                        out["read_full"] += 1
+                        file_path = inp.get("file_path")
+                        if not isinstance(file_path, str):
+                            continue
+                        try:
+                            size = os.path.getsize(file_path)
+                        except OSError:
+                            continue
+
+                        out["read_full_existing"] += 1
+                        out["read_full_bytes_total"] += int(size)
+                        if size > out["read_full_max_bytes"]:
+                            out["read_full_max_bytes"] = int(size)
+                        if size > max_full_read_file_bytes:
+                            out["read_full_over_limit"] += 1
+        except OSError:
+            continue
+
+    out["tokens"]["total"] = (
+        out["tokens"]["input"]
+        + out["tokens"]["output"]
+        + out["tokens"]["cache_read"]
+        + out["tokens"]["cache_create"]
+    )
+    return out
+
+
+def _read_task_events(events_path: str, repo_abs: str, cutoff_ts: float) -> dict[str, int]:
+    stats = {
+        "task_started": 0,
+        "task_completed": 0,
+    }
+    if not os.path.exists(events_path):
+        return stats
+
+    try:
+        with open(events_path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                repo = obj.get("repo")
+                if repo and os.path.abspath(repo) != repo_abs:
+                    continue
+
+                ts = _parse_isoish(obj.get("timestamp"))
+                if ts is None:
+                    try:
+                        ts = float(obj.get("ts", 0) or 0)
+                    except (TypeError, ValueError):
+                        ts = 0
+                if ts and ts < cutoff_ts:
+                    continue
+
+                evt = obj.get("event_type")
+                if evt in stats:
+                    stats[evt] += 1
+    except OSError:
+        return stats
+
+    return stats
+
+
+def _evaluate(metrics: dict[str, Any], strict_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+
+    read_calls = int(metrics["read_calls"])
+    read_chunked = int(metrics["read_chunked"])
+
+    chunk_ratio = (read_chunked / read_calls * 100.0) if read_calls else 100.0
+    metrics["read_chunk_ratio_pct"] = round(chunk_ratio, 2)
+
+    def fail(metric: str, actual: Any, threshold: Any, op: str, message: str) -> None:
+        failures.append(
+            {
+                "metric": metric,
+                "actual": actual,
+                "threshold": threshold,
+                "operator": op,
+                "message": message,
+            }
+        )
+
+    min_chunk = float(strict_cfg.get("min_read_chunk_ratio_pct", 70))
+    if chunk_ratio < min_chunk:
+        fail(
+            "read_chunk_ratio_pct",
+            round(chunk_ratio, 2),
+            min_chunk,
+            ">=",
+            "Chunked reads are below required ratio.",
+        )
+
+    max_full_reads = int(strict_cfg.get("max_full_reads_window", 120))
+    if int(metrics["read_full"]) > max_full_reads:
+        fail(
+            "read_full",
+            int(metrics["read_full"]),
+            max_full_reads,
+            "<=",
+            "Full-file read count exceeded window cap.",
+        )
+
+    max_full_read_file_kb = int(strict_cfg.get("max_full_read_file_kb", 12))
+    max_full_read_file_bytes = max_full_read_file_kb * 1024
+    if int(metrics["read_full_over_limit"]) > 0:
+        fail(
+            "read_full_over_limit",
+            int(metrics["read_full_over_limit"]),
+            0,
+            "==",
+            "One or more full-file reads exceeded the max full-read file size limit.",
+        )
+
+    if int(metrics["read_full_max_bytes"]) > max_full_read_file_bytes:
+        fail(
+            "read_full_max_bytes",
+            int(metrics["read_full_max_bytes"]),
+            max_full_read_file_bytes,
+            "<=",
+            "A full-file read exceeded the max full-read file size limit.",
+        )
+
+    max_todo = int(strict_cfg.get("max_todowrite_calls_window", 40))
+    if int(metrics["todowrite_calls"]) > max_todo:
+        fail(
+            "todowrite_calls",
+            int(metrics["todowrite_calls"]),
+            max_todo,
+            "<=",
+            "TodoWrite call volume exceeded cap.",
+        )
+
+    max_total = int(strict_cfg.get("max_total_tokens_window", 100_000_000))
+    if int(metrics["tokens"]["total"]) > max_total:
+        fail(
+            "tokens.total",
+            int(metrics["tokens"]["total"]),
+            max_total,
+            "<=",
+            "Total tokens exceeded window budget.",
+        )
+
+    require_kpi = bool(strict_cfg.get("require_non_null_tokens_per_completed_todo", True))
+    if require_kpi and metrics.get("kpi_tokens_per_completed_todo") is None:
+        fail(
+            "kpi_tokens_per_completed_todo",
+            None,
+            "non-null",
+            "==",
+            "KPI is null because completed task events are missing or zero.",
+        )
+
+    return failures
+
+
+def _format_summary(result: dict[str, Any]) -> str:
+    m = result["metrics"]
+    t = m["tokens"]
+    return "\n".join(
+        [
+            "Strict Telemetry Summary",
+            f"window_days={result['window_days']}",
+            f"tokens.total={t['total']}",
+            f"tokens.input={t['input']} tokens.output={t['output']} cache={t['cache_read'] + t['cache_create']}",
+            f"read.calls={m['read_calls']} chunked={m['read_chunked']} full={m['read_full']} chunk_ratio_pct={m['read_chunk_ratio_pct']}",
+            f"read.full.avg_bytes={m['read_full_avg_bytes']} read.full.max_bytes={m['read_full_max_bytes']} read.full.over_limit={m['read_full_over_limit']}",
+            f"todowrite.calls={m['todowrite_calls']}",
+            f"tasks.completed={m['task_completed']} kpi_tokens_per_completed_todo={m['kpi_tokens_per_completed_todo']}",
+            f"violations={len(result['violations'])}",
+        ]
+    )
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="agent-telemetry-strict")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p.add_argument("--events")
+    p.add_argument("--window-days", type=int)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--out")
+    p.add_argument("--enforce", action="store_true")
+    args = p.parse_args()
+
+    repo_abs = _abs_repo(repo_root(args.repo))
+    cfg = load_repo_config(repo_abs)
+    strict = cfg.get("governance", {}).get("strict_mode", {})
+    max_full_read_file_kb = int(strict.get("max_full_read_file_kb", 12))
+    max_full_read_file_bytes = max_full_read_file_kb * 1024
+
+    window_days = int(args.window_days or strict.get("window_days", 7))
+    cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - (window_days * 86400)
+
+    events_path = args.events
+    if not events_path:
+        configured = cfg.get("telemetry", {}).get("events_path", ".claude/agent-events.jsonl")
+        events_path = configured if os.path.isabs(configured) else os.path.join(repo_abs, configured)
+
+    event_metrics = _read_events(repo_abs, args.claude_home, cutoff_ts, max_full_read_file_bytes)
+    task_metrics = _read_task_events(events_path, repo_abs, cutoff_ts)
+
+    read_full_existing = int(event_metrics["read_full_existing"])
+    avg_bytes = int(event_metrics["read_full_bytes_total"] / read_full_existing) if read_full_existing else 0
+
+    completed = int(task_metrics["task_completed"])
+    total_tokens = int(event_metrics["tokens"]["total"])
+    kpi = round(total_tokens / completed, 2) if completed else None
+
+    metrics = {
+        **event_metrics,
+        **task_metrics,
+        "read_full_avg_bytes": avg_bytes,
+        "kpi_tokens_per_completed_todo": kpi,
+    }
+
+    violations = _evaluate(metrics, strict)
+    status = "fail" if violations else "pass"
+
+    result = {
+        "repo": repo_abs,
+        "window_days": window_days,
+        "strict_mode_enabled": bool(strict.get("enabled", True)),
+        "status": status,
+        "metrics": metrics,
+        "violations": violations,
+        "thresholds": strict,
+    }
+
+    if args.out:
+        out_path = args.out if os.path.isabs(args.out) else os.path.join(repo_abs, args.out)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2)
+            fh.write("\n")
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(_format_summary(result))
+        if violations:
+            print("\nViolations:")
+            for v in violations:
+                print(
+                    f"- {v['metric']} actual={v['actual']} required {v['operator']} {v['threshold']} :: {v['message']}"
+                )
+
+    enforce = bool(args.enforce or strict.get("enforce_exit_nonzero", False))
+    if enforce and violations:
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

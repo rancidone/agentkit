@@ -27,6 +27,34 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ./agent-telemetry ingest --repo . --claude-home ~/.claude --events ./.claude/agent-events.jsonl
 ./agent-telemetry report --repo . --window-days 7
 ./agent-telemetry hotspots --repo . --window-days 7 --limit 12
+./agent-telemetry-strict --repo . --window-days 7 --enforce
+```
+
+## Task Event Logging (KPI Wiring)
+
+`agent-telemetry` and `agent-telemetry-strict` compute `tokens_per_completed_todo` from task lifecycle events.
+Record both `task_started` and `task_completed` in the repo event log (`.claude/agent-events.jsonl`).
+
+Required fields:
+- `repo`
+- `task_id`
+- `session_branch`
+
+Examples:
+
+```bash
+./agent-log --events ./.claude/agent-events.jsonl --event-type task_started \
+  --field repo="$(pwd)" --field task_id="phase4-fw" --field session_branch="todo/20260308-130742"
+
+./agent-log --events ./.claude/agent-events.jsonl --event-type task_completed \
+  --field repo="$(pwd)" --field task_id="phase4-fw" --field session_branch="todo/20260308-130742"
+```
+
+Agentkit wrappers:
+
+```bash
+./agent-log-task-complete /path/to/repo phase4-fw todo/20260308-130742
+./agent-weekly-telemetry-gate /path/to/repo 7 "$HOME/.claude" "$HOME/.claude/tools/agentkit/.claude/agent-events.jsonl"
 ```
 
 
