@@ -1,0 +1,713 @@
+#!/usr/bin/env python3
+"""Ingest Claude local logs and report task-level token telemetry."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import time
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any
+
+from agentkit_common import default_state_dir, parse_isoish_timestamp, repo_id, repo_root
+
+
+def db_path(repo: str) -> str:
+    return os.path.join(default_state_dir(), f"telemetry-{repo_id(repo)}.db")
+
+
+def open_db(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          session_id TEXT,
+          branch TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          model TEXT,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_create_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_unique
+        ON usage_events(
+          repo,
+          IFNULL(message_uuid, ''),
+          IFNULL(session_id, ''),
+          IFNULL(branch, ''),
+          IFNULL(timestamp, 0),
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          cache_create_tokens
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          session_branch TEXT,
+          worker_branch TEXT,
+          status TEXT,
+          timestamp REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_evt_unique
+        ON task_events(repo, task_id, event_type, session_branch, worker_branch, timestamp)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          session_id TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          tool_name TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_unique
+        ON tool_calls(
+          repo,
+          IFNULL(message_uuid, ''),
+          IFNULL(session_id, ''),
+          IFNULL(timestamp, 0),
+          tool_name
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+@dataclass
+class Usage:
+    repo: str
+    session_id: str | None
+    branch: str | None
+    message_uuid: str | None
+    timestamp: float | None
+    model: str | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_create_tokens: int
+
+
+def parse_usage_line(obj: dict[str, Any], repo_filter: str) -> Usage | None:
+    repo = obj.get("cwd")
+    if not repo:
+        return None
+    repo_abs = os.path.abspath(repo_filter)
+    cwd_abs = os.path.abspath(repo)
+    if not (cwd_abs == repo_abs or cwd_abs.startswith(repo_abs + os.sep)):
+        return None
+
+    msg = obj.get("message") or {}
+    usage = msg.get("usage") or {}
+    if not usage:
+        return None
+
+    cc = usage.get("cache_creation") or {}
+    return Usage(
+        repo=repo,
+        session_id=obj.get("sessionId"),
+        branch=obj.get("gitBranch"),
+        message_uuid=obj.get("uuid"),
+        timestamp=parse_isoish_timestamp(obj.get("timestamp")),
+        model=(msg.get("model") or None),
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        cache_read_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+        cache_create_tokens=int(
+            usage.get("cache_creation_input_tokens", 0)
+            or cc.get("ephemeral_1h_input_tokens", 0)
+            or cc.get("ephemeral_5m_input_tokens", 0)
+            or 0
+        ),
+    )
+
+
+def extract_tool_name(obj: dict[str, Any]) -> str | None:
+    msg = obj.get("message") or {}
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return None
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "tool_use":
+            return str(part.get("name") or "")
+    return None
+
+
+def ingest_usage(conn: sqlite3.Connection, repo: str, logs_root: str) -> dict[str, int]:
+    inserted_usage = 0
+    inserted_tools = 0
+    projects = os.path.join(logs_root, "projects")
+    if not os.path.isdir(projects):
+        return {"usage_events": 0, "tool_calls": 0}
+
+    for root, _, files in os.walk(projects):
+        for name in files:
+            if not name.endswith(".jsonl"):
+                continue
+            p = os.path.join(root, name)
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        u = parse_usage_line(obj, repo)
+                        if u:
+                            conn.execute(
+                                """
+                            INSERT OR IGNORE INTO usage_events(
+                                  repo, session_id, branch, message_uuid, timestamp, model,
+                                  input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    u.repo,
+                                    u.session_id,
+                                    u.branch,
+                                    u.message_uuid,
+                                    u.timestamp,
+                                    u.model,
+                                    u.input_tokens,
+                                    u.output_tokens,
+                                    u.cache_read_tokens,
+                                    u.cache_create_tokens,
+                                ),
+                            )
+                            inserted_usage += 1
+
+                        tool_name = extract_tool_name(obj)
+                        if tool_name:
+                            cwd = obj.get("cwd")
+                            if cwd:
+                                repo_abs = os.path.abspath(repo)
+                                cwd_abs = os.path.abspath(cwd)
+                                if not (cwd_abs == repo_abs or cwd_abs.startswith(repo_abs + os.sep)):
+                                    continue
+                            conn.execute(
+                                """
+                            INSERT OR IGNORE INTO tool_calls(repo, session_id, message_uuid, timestamp, tool_name)
+                                VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    repo,
+                                    obj.get("sessionId"),
+                                    obj.get("uuid"),
+                                    parse_isoish_timestamp(obj.get("timestamp")),
+                                    tool_name,
+                                ),
+                            )
+                            inserted_tools += 1
+            except OSError:
+                continue
+    conn.commit()
+    return {"usage_events": inserted_usage, "tool_calls": inserted_tools}
+
+
+def ingest_task_events(conn: sqlite3.Connection, repo: str, events_path: str) -> int:
+    if not os.path.exists(events_path):
+        return 0
+    inserted = 0
+    with open(events_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("repo") and os.path.abspath(obj["repo"]) != os.path.abspath(repo):
+                continue
+            task_id = obj.get("task_id")
+            evt = obj.get("event_type")
+            if not task_id or not evt:
+                continue
+            ts = parse_isoish_timestamp(obj.get("timestamp")) or float(obj.get("ts", 0) or 0)
+            if not ts:
+                ts = time.time()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO task_events(repo, task_id, event_type, session_branch, worker_branch, status, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo,
+                    str(task_id),
+                    str(evt),
+                    obj.get("session_branch"),
+                    obj.get("worker_branch"),
+                    obj.get("status"),
+                    ts,
+                ),
+            )
+            inserted += 1
+    conn.commit()
+    return inserted
+
+
+def load_task_windows(conn: sqlite3.Connection, repo: str) -> dict[str, tuple[float, float]]:
+    rows = conn.execute(
+        """
+        SELECT task_id, event_type, timestamp
+        FROM task_events
+        WHERE repo = ?
+        ORDER BY timestamp ASC
+        """,
+        (repo,),
+    ).fetchall()
+    windows: dict[str, list[float]] = {}
+    for task_id, evt, ts in rows:
+        t = windows.setdefault(task_id, [0.0, 0.0])
+        if evt == "task_started":
+            t[0] = ts
+        if evt == "task_completed":
+            t[1] = ts
+    out: dict[str, tuple[float, float]] = {}
+    for task_id, (start, end) in windows.items():
+        if start > 0 and end >= start:
+            out[task_id] = (start, end)
+    return out
+
+
+def task_usage_summary(conn: sqlite3.Connection, repo: str) -> dict[str, dict[str, int]]:
+    windows = load_task_windows(conn, repo)
+    result: dict[str, dict[str, int]] = {}
+    for task_id, (start, end) in windows.items():
+        row = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens), 0),
+              COALESCE(SUM(input_tokens + output_tokens), 0),
+              COALESCE(SUM(cache_read_tokens + cache_create_tokens), 0)
+            FROM usage_events
+            WHERE repo = ? AND timestamp >= ? AND timestamp <= ?
+            """,
+            (repo, start, end),
+        ).fetchone()
+        result[task_id] = {
+            "total_tokens": int(row[0] or 0),
+            "prompt_completion_tokens": int(row[1] or 0),
+            "cache_tokens": int(row[2] or 0),
+        }
+    return result
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    conn.execute("DELETE FROM usage_events WHERE repo = ?", (repo,))
+    conn.execute("DELETE FROM tool_calls WHERE repo = ?", (repo,))
+    conn.execute("DELETE FROM task_events WHERE repo = ?", (repo,))
+    conn.commit()
+    usage_stats = ingest_usage(conn, repo, args.claude_home)
+    task_stats = ingest_task_events(conn, repo, args.events)
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "usage_events_ingested": usage_stats["usage_events"],
+                "tool_calls_ingested": usage_stats["tool_calls"],
+                "task_events_ingested": task_stats,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    cutoff = time.time() - (args.window_days * 86400)
+
+    completed = conn.execute(
+        """
+        SELECT COUNT(*) FROM task_events
+        WHERE repo = ? AND event_type = 'task_completed' AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()[0]
+    totals = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(input_tokens), 0),
+          COALESCE(SUM(output_tokens), 0),
+          COALESCE(SUM(cache_read_tokens), 0),
+          COALESCE(SUM(cache_create_tokens), 0)
+        FROM usage_events
+        WHERE repo = ? AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()
+    grand = int(sum(totals))
+    kpi = (grand / completed) if completed else None
+
+    per_task = task_usage_summary(conn, repo)
+    phase_tokens: dict[str, int] = defaultdict(int)
+    for task_id, s in per_task.items():
+        phase = task_id.split("-L", 1)[0]
+        phase_tokens[phase] += s["total_tokens"]
+
+    started = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE repo = ? AND event_type = 'task_started' AND timestamp >= ?",
+        (repo, cutoff),
+    ).fetchone()[0]
+    distinct_started = conn.execute(
+        "SELECT COUNT(DISTINCT task_id) FROM task_events WHERE repo = ? AND event_type = 'task_started' AND timestamp >= ?",
+        (repo, cutoff),
+    ).fetchone()[0]
+    retry_count = int(started - distinct_started) if started >= distinct_started else 0
+
+    conflict_count = conn.execute(
+        """
+        SELECT COUNT(*) FROM task_events
+        WHERE repo = ? AND event_type = 'worker_merged' AND LOWER(COALESCE(status, '')) LIKE '%conflict%' AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()[0]
+
+    merge_gate_row = conn.execute(
+        """
+        SELECT
+          MIN(CASE WHEN event_type = 'merge_gate_started' THEN timestamp END),
+          MAX(CASE WHEN event_type = 'merge_gate_finished' THEN timestamp END)
+        FROM task_events
+        WHERE repo = ? AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()
+    merge_gate_tokens = None
+    if merge_gate_row and merge_gate_row[0] and merge_gate_row[1]:
+        gate_tokens = conn.execute(
+            """
+            SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens), 0)
+            FROM usage_events
+            WHERE repo = ? AND timestamp >= ? AND timestamp <= ?
+            """,
+            (repo, merge_gate_row[0], merge_gate_row[1]),
+        ).fetchone()[0]
+        merge_gate_tokens = int(gate_tokens or 0)
+
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": args.window_days,
+                "completed_tasks": int(completed),
+                "tokens": {
+                    "input": int(totals[0]),
+                    "output": int(totals[1]),
+                    "cache_read": int(totals[2]),
+                    "cache_create": int(totals[3]),
+                    "total": grand,
+                },
+                "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
+                "task_breakdown_count": len(per_task),
+                "tokens_by_phase": dict(sorted(phase_tokens.items())),
+                "retry_conflict_penalty": {
+                    "retries": retry_count,
+                    "merge_conflicts": int(conflict_count),
+                },
+                "merge_gate_cost_overhead_tokens": merge_gate_tokens,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_task(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    summary = task_usage_summary(conn, repo).get(args.task_id)
+    if summary is None:
+        raise SystemExit(f"no usage window found for task_id={args.task_id}")
+    evts = conn.execute(
+        """
+        SELECT event_type, session_branch, worker_branch, status, timestamp
+        FROM task_events
+        WHERE repo = ? AND task_id = ?
+        ORDER BY timestamp ASC
+        """,
+        (repo, args.task_id),
+    ).fetchall()
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "task_id": args.task_id,
+                "tokens": summary,
+                "events": [
+                    {
+                        "event_type": e[0],
+                        "session_branch": e[1],
+                        "worker_branch": e[2],
+                        "status": e[3],
+                        "timestamp": e[4],
+                    }
+                    for e in evts
+                ],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_hotspots(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    cutoff = time.time() - (args.window_days * 86400)
+    rows = conn.execute(
+        """
+        SELECT tool_name, COUNT(*) AS calls
+        FROM tool_calls
+        WHERE repo = ? AND timestamp >= ?
+        GROUP BY tool_name
+        ORDER BY calls DESC
+        LIMIT ?
+        """,
+        (repo, cutoff, args.limit),
+    ).fetchall()
+
+    # Soft proxy: average message tokens for sessions where this tool appears.
+    per_tool: list[dict[str, Any]] = []
+    for tool_name, calls in rows:
+        tokens = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_create_tokens), 0)
+            FROM usage_events u
+            JOIN tool_calls t ON t.message_uuid = u.message_uuid
+            WHERE u.repo = ? AND t.tool_name = ? AND u.timestamp >= ?
+            """,
+            (repo, tool_name, cutoff),
+        ).fetchone()[0]
+        per_tool.append(
+            {
+                "tool_name": tool_name,
+                "calls": int(calls),
+                "estimated_tokens": int(tokens or 0),
+                "avg_tokens_per_call": round((tokens / calls), 2) if calls else 0,
+            }
+        )
+
+    warn = [t for t in per_tool if t["avg_tokens_per_call"] > args.warn_avg_tokens]
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": args.window_days,
+                "hotspots": per_tool,
+                "soft_warnings": warn,
+                "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_export_jsonl(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        for row in conn.execute(
+            """
+            SELECT repo, session_id, branch, message_uuid, timestamp, model,
+                   input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
+            FROM usage_events
+            WHERE repo = ?
+            ORDER BY timestamp ASC
+            """,
+            (repo,),
+        ):
+            record = {
+                "repo": row[0],
+                "session_id": row[1],
+                "branch": row[2],
+                "message_uuid": row[3],
+                "timestamp": row[4],
+                "model": row[5],
+                "input_tokens": row[6],
+                "output_tokens": row[7],
+                "cache_read_tokens": row[8],
+                "cache_create_tokens": row[9],
+            }
+            fh.write(json.dumps(record) + "\n")
+    print(json.dumps({"repo": repo, "out": args.out}, indent=2))
+    return 0
+
+
+def cmd_weekly_summary(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = open_db(db_path(repo))
+    cutoff = time.time() - (args.window_days * 86400)
+
+    report_row = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_create_tokens), 0),
+          COALESCE(SUM(input_tokens + output_tokens), 0),
+          COALESCE(SUM(cache_read_tokens + cache_create_tokens), 0)
+        FROM usage_events
+        WHERE repo = ? AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()
+    completed = conn.execute(
+        """
+        SELECT COUNT(*) FROM task_events
+        WHERE repo = ? AND event_type = 'task_completed' AND timestamp >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()[0]
+
+    hotspots = conn.execute(
+        """
+        SELECT tool_name, COUNT(*) AS calls
+        FROM tool_calls
+        WHERE repo = ? AND timestamp >= ?
+        GROUP BY tool_name
+        ORDER BY calls DESC
+        LIMIT 8
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    total = int(report_row[0] or 0)
+    kpi = round(total / completed, 2) if completed else None
+    lines = [
+        "# Weekly Agent Telemetry",
+        "",
+        f"- Window days: {args.window_days}",
+        f"- Completed TODO tasks: {int(completed)}",
+        f"- Total tokens: {total}",
+        f"- Prompt+completion tokens: {int(report_row[1] or 0)}",
+        f"- Cache tokens: {int(report_row[2] or 0)}",
+        f"- KPI tokens per completed TODO: {kpi}",
+        "",
+        "## Top Token-Heavy Tool Candidates",
+        "",
+    ]
+    for name, calls in hotspots:
+        lines.append(f"- {name}: {int(calls)} calls")
+    lines.extend(
+        [
+            "",
+            "## Suggested Allowlist Tightenings",
+            "",
+            "- Move high-output scans to planner-only execution.",
+            "- Prefer targeted file reads over broad glob scans.",
+            "- Keep worker Bash commands bounded to changed-scope checks.",
+            "",
+        ]
+    )
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    print(json.dumps({"repo": repo, "out": args.out}, indent=2))
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agent-telemetry")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    p_ingest = sp.add_parser("ingest")
+    p_ingest.add_argument("--repo", default=".")
+    p_ingest.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_ingest.add_argument(
+        "--events",
+        default=".claude/agent-events.jsonl",
+        help="repo-relative or absolute path to orchestrator event log",
+    )
+    p_ingest.set_defaults(
+        func=lambda a: cmd_ingest(
+            argparse.Namespace(
+                repo=a.repo,
+                claude_home=a.claude_home,
+                events=a.events if os.path.isabs(a.events) else os.path.join(repo_root(a.repo), a.events),
+            )
+        )
+    )
+
+    p_report = sp.add_parser("report")
+    p_report.add_argument("--repo", default=".")
+    p_report.add_argument("--window-days", type=int, default=7)
+    p_report.set_defaults(func=cmd_report)
+
+    p_task = sp.add_parser("task")
+    p_task.add_argument("task_id")
+    p_task.add_argument("--repo", default=".")
+    p_task.set_defaults(func=cmd_task)
+
+    p_hot = sp.add_parser("hotspots")
+    p_hot.add_argument("--repo", default=".")
+    p_hot.add_argument("--window-days", type=int, default=7)
+    p_hot.add_argument("--limit", type=int, default=12)
+    p_hot.add_argument("--warn-avg-tokens", type=int, default=3500)
+    p_hot.set_defaults(func=cmd_hotspots)
+
+    p_exp = sp.add_parser("export-jsonl")
+    p_exp.add_argument("--repo", default=".")
+    p_exp.add_argument("--out", required=True)
+    p_exp.set_defaults(func=cmd_export_jsonl)
+
+    p_weekly = sp.add_parser("weekly-summary")
+    p_weekly.add_argument("--repo", default=".")
+    p_weekly.add_argument("--window-days", type=int, default=7)
+    p_weekly.add_argument("--out", default=".claude/telemetry-weekly.md")
+    p_weekly.set_defaults(
+        func=lambda a: cmd_weekly_summary(
+            argparse.Namespace(
+                repo=a.repo,
+                window_days=a.window_days,
+                out=a.out if os.path.isabs(a.out) else os.path.join(repo_root(a.repo), a.out),
+            )
+        )
+    )
+    return p
+
+
+def main() -> int:
+    args = parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
