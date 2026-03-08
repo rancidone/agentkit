@@ -11,6 +11,7 @@ import time
 from collections import Counter
 from typing import Any
 
+from agent_extractors import extract_symbols, snippet_preview
 from agentkit_common import (
     DEFAULT_EXCLUDES,
     default_state_dir,
@@ -57,11 +58,26 @@ def open_db(path: str) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS symbols (
+          repo TEXT NOT NULL,
+          path TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          extractor TEXT NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY (repo, path, symbol, start_line, end_line)
+        )
+        """
+    )
     conn.commit()
     return conn
 
 
-def parse_tasks_from_todo(repo: str, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_tasks_from_todo(repo: str) -> list[dict[str, Any]]:
     todo_path = os.path.join(repo, "TODO.md")
     if not os.path.exists(todo_path):
         return []
@@ -93,22 +109,54 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
     cfg = load_repo_config(repo)
     excludes = set(DEFAULT_EXCLUDES)
     excludes.update(set(cfg.get("index", {}).get("exclude_paths", [])))
+    max_file_bytes = int(cfg.get("index", {}).get("max_file_bytes", 200000))
+    extract_cfg = cfg.get("extract", {})
+    extract_enabled = bool(extract_cfg.get("enabled", True))
+    extract_max_file_bytes = int(extract_cfg.get("max_file_bytes", max_file_bytes))
+    language_layers: dict[str, str] = extract_cfg.get("languages", {})
+
     conn = open_db(db_path(repo))
     now = time.time()
 
     if mode == "full":
         conn.execute("DELETE FROM files WHERE repo = ?", (repo,))
         conn.execute("DELETE FROM tasks WHERE repo = ?", (repo,))
+        conn.execute("DELETE FROM symbols WHERE repo = ?", (repo,))
 
     files = iter_repo_files(repo, excludes)
     rows = []
+    symbol_rows: list[tuple[Any, ...]] = []
+    files_skipped_size = 0
+
     for rel in files:
         full = os.path.join(repo, rel)
         stat = os.stat(full)
+        if stat.st_size > max_file_bytes:
+            files_skipped_size += 1
+            continue
+
         role = infer_role(rel)
-        ext = os.path.splitext(rel)[1].lower()
+        ext = os.path.splitext(rel)[1].lower().lstrip(".")
         is_test = 1 if role == "test" else 0
-        rows.append((repo, rel, role, ext, is_test, stat.st_size, stat.st_mtime, now))
+        rows.append((repo, rel, role, f".{ext}" if ext else "", is_test, stat.st_size, stat.st_mtime, now))
+
+        if extract_enabled and stat.st_size <= extract_max_file_bytes:
+            layer = language_layers.get(ext, "")
+            symbols = extract_symbols(full, f".{ext}" if ext else "", layer)
+            for sym in symbols:
+                symbol_rows.append(
+                    (
+                        repo,
+                        rel,
+                        sym["symbol"],
+                        sym.get("kind", "function"),
+                        int(sym["start_line"]),
+                        int(sym["end_line"]),
+                        layer or "auto",
+                        now,
+                    )
+                )
+
     conn.executemany(
         """
         INSERT OR REPLACE INTO files(repo, path, role, ext, is_test, size, mtime, updated_at)
@@ -117,7 +165,16 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
         rows,
     )
 
-    tasks = parse_tasks_from_todo(repo, cfg)
+    if symbol_rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO symbols(repo, path, symbol, kind, start_line, end_line, extractor, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            symbol_rows,
+        )
+
+    tasks = parse_tasks_from_todo(repo)
     task_rows = [
         (repo, t["task_id"], t["phase"], t["text"], t["line_no"], t["is_done"], now)
         for t in tasks
@@ -136,13 +193,14 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
         "repo": repo,
         "mode": mode,
         "files_indexed": len(rows),
+        "files_skipped_size": files_skipped_size,
         "tasks_indexed": len(task_rows),
+        "symbols_indexed": len(symbol_rows),
         "role_counts": dict(role_counts),
     }
 
 
-def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
-    conn = open_db(db_path(repo))
+def _tokenize(task_text: str) -> list[str]:
     normalized = (
         task_text.lower()
         .replace("`", " ")
@@ -152,70 +210,156 @@ def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
         .replace(")", " ")
     )
     tokens = [t for t in normalized.split() if len(t) > 2]
-    tokens = list(dict.fromkeys(tokens))[:30]
+    tokens = list(dict.fromkeys(tokens))[:40]
     synonyms = {
         "sse": ["events", "event", "routes_events", "live"],
         "endpoint": ["route", "routes", "api", "http_server"],
         "wire": ["store", "live", "events", "client"],
         "ui": ["svelte", "view", "components", "src"],
     }
-    expanded_tokens = list(tokens)
-    for tok in list(tokens):
-        expanded_tokens.extend(synonyms.get(tok, []))
-    tokens = list(dict.fromkeys(expanded_tokens))
+    expanded = list(tokens)
+    for tok in tokens:
+        expanded.extend(synonyms.get(tok, []))
+    return list(dict.fromkeys(expanded))
 
+
+def _score_candidates(repo: str, task_text: str, limit: int) -> list[tuple[float, str, str, int]]:
+    conn = open_db(db_path(repo))
+    tokens = _tokenize(task_text)
     cur = conn.execute("SELECT path, role, is_test FROM files WHERE repo = ?", (repo,))
     scored: list[tuple[float, str, str, int]] = []
+    lower_task = task_text.lower()
+
     for path, role, is_test in cur.fetchall():
         p = path.lower()
         score = 0.0
         for tok in tokens:
             if tok in p:
                 score += 5.0
-        if role == "api" and ("route" in task_text.lower() or "endpoint" in task_text.lower()):
+        if role == "api" and ("route" in lower_task or "endpoint" in lower_task):
             score += 2.0
-        if role == "view" and ("ui" in task_text.lower() or "svelte" in task_text.lower()):
+        if role == "view" and ("ui" in lower_task or "svelte" in lower_task):
             score += 2.0
         if role == "test":
             score += 0.5
+
+        sym_hit = conn.execute(
+            """
+            SELECT COUNT(*) FROM symbols
+            WHERE repo = ? AND path = ? AND (
+              LOWER(symbol) LIKE ? OR LOWER(symbol) LIKE ? OR LOWER(symbol) LIKE ?
+            )
+            """,
+            (repo, path, "%event%", "%sse%", "%live%"),
+        ).fetchone()[0]
+        if sym_hit:
+            score += min(3.0, sym_hit * 0.6)
+
         if score > 0:
             scored.append((score, path, role, is_test))
 
     scored.sort(key=lambda x: (-x[0], x[1]))
-    if not scored:
-        fallback = conn.execute(
+    if scored:
+        return scored[:limit]
+
+    fallback = conn.execute(
+        """
+        SELECT path, role, is_test
+        FROM files
+        WHERE repo = ? AND role IN ('api', 'view', 'model', 'test')
+        ORDER BY path ASC
+        LIMIT ?
+        """,
+        (repo, max(limit * 2, 30)),
+    ).fetchall()
+    out: list[tuple[float, str, str, int]] = []
+    for path, role, is_test in fallback:
+        base = 0.5 + (1.2 if role == "api" else 1.0 if role == "view" else 0.8 if role == "model" else 0.3)
+        out.append((base, path, role, is_test))
+    return out[:limit]
+
+
+def _pick_snippets(repo: str, task_text: str, file_paths: list[str], cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    conn = open_db(db_path(repo))
+    context_cfg = cfg.get("context", {})
+    max_total = int(context_cfg.get("max_snippets_total", 20))
+    max_per_file = int(context_cfg.get("max_snippets_per_file", 3))
+    prefer_symbols = bool(context_cfg.get("prefer_symbol_blocks", True))
+    if not prefer_symbols:
+        return []
+
+    tokens = _tokenize(task_text)
+    snippets: list[dict[str, Any]] = []
+
+    for path in file_paths:
+        if len(snippets) >= max_total:
+            break
+
+        rows = conn.execute(
             """
-            SELECT path, role, is_test
-            FROM files
-            WHERE repo = ? AND (role IN ('api', 'view', 'model', 'test'))
-            ORDER BY path ASC
-            LIMIT ?
+            SELECT symbol, kind, start_line, end_line, extractor
+            FROM symbols
+            WHERE repo = ? AND path = ?
+            ORDER BY start_line ASC
             """,
-            (repo, max(limit * 2, 30)),
+            (repo, path),
         ).fetchall()
-        for path, role, is_test in fallback:
-            base = 0.5
-            if role == "api":
-                base += 1.2
-            if role == "view":
-                base += 1.0
-            if role == "model":
-                base += 0.8
-            if role == "test":
-                base += 0.3
-            scored.append((base, path, role, is_test))
+        if not rows:
+            continue
 
-    top = scored[:limit]
-    files = [{"path": p, "role": r, "score": round(s, 2)} for s, p, r, _ in top if not _]
-    tests = [p for _, p, _, is_test in top if is_test]
+        scored: list[tuple[float, tuple[Any, ...]]] = []
+        for r in rows:
+            symbol = (r[0] or "").lower()
+            score = 0.0
+            for tok in tokens:
+                if tok in symbol:
+                    score += 4.0
+            if any(x in symbol for x in ("event", "sse", "live", "stream", "route", "handler")):
+                score += 1.5
+            if score > 0:
+                scored.append((score, r))
 
+        if not scored:
+            # fallback: first few symbols in file
+            scored = [(0.2, r) for r in rows[:max_per_file]]
+
+        scored.sort(key=lambda x: (-x[0], x[1][2]))
+        for score, r in scored[:max_per_file]:
+            if len(snippets) >= max_total:
+                break
+            start_line = int(r[2])
+            end_line = int(r[3])
+            full_path = os.path.join(repo, path)
+            snippets.append(
+                {
+                    "path": path,
+                    "symbol": r[0],
+                    "kind": r[1],
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "extractor": r[4],
+                    "score": round(score, 2),
+                    "preview": snippet_preview(full_path, start_line, end_line, max_lines=40),
+                }
+            )
+
+    return snippets
+
+
+def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
     cfg = load_repo_config(repo)
-    test_hints = cfg.get("test_hints", {})
+    scored = _score_candidates(repo, task_text, limit)
+
+    files = [{"path": p, "role": r, "score": round(s, 2)} for s, p, r, _ in scored if not _]
+    tests = [p for _, p, _, is_test in scored if is_test]
+    snippets = _pick_snippets(repo, task_text, [f["path"] for f in files], cfg)
+
     return {
         "task": task_text,
         "files": files,
-        "tests": tests[:5],
-        "test_hints": test_hints,
+        "tests": tests[: int(cfg.get("context", {}).get("max_tests_per_pack", 5))],
+        "snippets": snippets,
+        "test_hints": cfg.get("test_hints", {}),
         "token_budget_hint": cfg.get("context", {}).get("default_token_budget", 3000),
     }
 
@@ -268,16 +412,21 @@ def cmd_pack(args: argparse.Namespace) -> int:
     if not task_text:
         raise SystemExit("--task or --task-id is required")
 
+    cfg = load_repo_config(repo)
     query = search_candidates(repo, task_text, args.limit)
+    max_files = int(cfg.get("context", {}).get("max_files_per_pack", args.limit))
+
     pack = {
         "task": query["task"],
         "context_budget_tokens": args.token_budget,
-        "selected_files": query["files"],
+        "selected_files": query["files"][:max_files],
+        "selected_snippets": query.get("snippets", []),
         "recommended_checks": query["test_hints"],
         "targeted_tests": query["tests"],
         "policy": {
             "worker_allowlist_profile": "lean-code-edit",
             "deny_high_cost_worker_ops": True,
+            "prefer_symbol_blocks": bool(cfg.get("context", {}).get("prefer_symbol_blocks", True)),
         },
     }
     if args.out:
