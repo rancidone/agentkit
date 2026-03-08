@@ -127,6 +127,13 @@ You can load adapters from repo files (trusted repos only).
 
 Template: `examples/custom_adapter.py`
 
+## Claude Commands (Portable)
+
+Portable Claude command markdown lives in `claude/commands/`.
+These commands invoke `agent-index`, `agent-telemetry`, and `agent-log` via `PATH` (no hardcoded home-directory tool paths).
+
+To use them in Claude Code, copy or symlink the files into your local `~/.claude/commands/` directory.
+
 ## License
 
 MIT
