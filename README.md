@@ -58,6 +58,16 @@ Agentkit wrappers:
 ```
 
 
+## Unified Orchestration CLI
+
+Use `agentkit` as a top-level orchestrator for indexing/context packing and telemetry reporting.
+
+```bash
+./agentkit prepare --repo . --task "implement SSE endpoint" --out /tmp/pack.json
+./agentkit observe --repo . --window-days 7
+./agentkit cycle --repo . --task "implement SSE endpoint" --out /tmp/pack.json
+```
+
 ## Project-Specific Extraction Adapters
 
 `agent-index` supports adapter plugins so each repo can add domain-specific symbol extraction.
