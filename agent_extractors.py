@@ -31,8 +31,9 @@ def _safe_read_lines(path: str) -> list[str]:
 
 def extract_c_like(lines: list[str]) -> list[dict[str, Any]]:
     symbols: list[dict[str, Any]] = []
+    # Parse return-type tokens explicitly to avoid ambiguous repetition/backtracking.
     sig = re.compile(
-        r"^\s*(?:[A-Za-z_][\w\s\*]*\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{\s*$"
+        r"^\s*(?:[A-Za-z_]\w*\**|\*+)(?:[ \t]+(?:[A-Za-z_]\w*\**|\*+))*[ \t]+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{\s*$"
     )
 
     i = 0
