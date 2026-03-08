@@ -1,7 +1,41 @@
+# Linux / editor temp files
+*~
+*.swp
+*.swo
+.nfs*
+.directory
+
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
 *.pyd
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage*
+htmlcov/
+build/
+dist/
+pip-wheel-metadata/
+
+# Databases and local state
 *.db
-.DS_Store
+*.sqlite
+*.sqlite3
+
+# VS Code
+.vscode/
+
+# Claude / Codex local artifacts
 .claude/
+.codex/
+
+# macOS
+.DS_Store
