@@ -11,7 +11,7 @@ import time
 from collections import Counter
 from typing import Any
 
-from agent_extractors import extract_symbols, snippet_preview
+from agent_extractors import extract_symbols, load_adapters, snippet_preview
 from agentkit_common import (
     DEFAULT_EXCLUDES,
     default_state_dir,
@@ -114,6 +114,7 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
     extract_enabled = bool(extract_cfg.get("enabled", True))
     extract_max_file_bytes = int(extract_cfg.get("max_file_bytes", max_file_bytes))
     language_layers: dict[str, str] = extract_cfg.get("languages", {})
+    adapters = load_adapters(repo, cfg)
 
     conn = open_db(db_path(repo))
     now = time.time()
@@ -142,7 +143,14 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
 
         if extract_enabled and stat.st_size <= extract_max_file_bytes:
             layer = language_layers.get(ext, "")
-            symbols = extract_symbols(full, f".{ext}" if ext else "", layer)
+            symbols = extract_symbols(
+                full,
+                f".{ext}" if ext else "",
+                layer,
+                rel_path=rel,
+                adapters=adapters,
+                cfg=cfg,
+            )
             for sym in symbols:
                 symbol_rows.append(
                     (
@@ -152,7 +160,7 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
                         sym.get("kind", "function"),
                         int(sym["start_line"]),
                         int(sym["end_line"]),
-                        layer or "auto",
+                        sym.get("extractor", layer or "auto"),
                         now,
                     )
                 )
@@ -197,6 +205,7 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
         "tasks_indexed": len(task_rows),
         "symbols_indexed": len(symbol_rows),
         "role_counts": dict(role_counts),
+        "adapters_loaded": [a.name for a in adapters],
     }
 
 

@@ -29,6 +29,66 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ./agent-telemetry hotspots --repo . --window-days 7 --limit 12
 ```
 
+
+## Project-Specific Extraction Adapters
+
+`agent-index` supports adapter plugins so each repo can add domain-specific symbol extraction.
+
+### Built-in adapters
+
+Use adapter names in `agentkit.json`:
+
+- `esp-idf-http-routes`
+- `svelte-live-api`
+- `typescript-stores`
+
+Example:
+
+```json
+{
+  "extract": {
+    "enabled": true,
+    "adapters": [
+      {
+        "type": "builtin",
+        "name": "esp-idf-http-routes",
+        "include_ext": ["c", "h"],
+        "include_paths": ["components/http_server/"]
+      },
+      {
+        "type": "builtin",
+        "name": "svelte-live-api",
+        "include_ext": ["ts", "svelte"],
+        "include_paths": ["src/lib/api/", "src/lib/stores/"]
+      }
+    ]
+  }
+}
+```
+
+### Custom python adapters
+
+You can load adapters from repo files (trusted repos only).
+
+```json
+{
+  "extract": {
+    "adapters": [
+      {
+        "type": "python",
+        "name": "custom-c-router",
+        "file": "tools/agentkit/custom_adapter.py",
+        "function": "extract",
+        "include_ext": ["c", "h"],
+        "include_paths": ["components/http_server/"]
+      }
+    ]
+  }
+}
+```
+
+Template: `examples/custom_adapter.py`
+
 ## License
 
 MIT
