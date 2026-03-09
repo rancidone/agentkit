@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="${1:-.}"
 DOC_DIR="${ROOT}/claude/commands"
+SKILL_DIR="${ROOT}/skills/agentkit-todo-codex"
 
 if [[ ! -d "$DOC_DIR" ]]; then
   echo "missing command docs directory: ${DOC_DIR}" >&2
@@ -10,7 +11,24 @@ if [[ ! -d "$DOC_DIR" ]]; then
 fi
 
 PATTERN='\$\(|<<|2>&1[[:space:]]*\|[[:space:]]*tail|&&|\|\||\\$'
-if rg -n "$PATTERN" "$DOC_DIR"/*.md >/tmp/agentkit-command-violations.txt; then
+
+declare -a TARGETS
+while IFS= read -r file; do
+  TARGETS+=("$file")
+done < <(find "$DOC_DIR" -type f -name '*.md' | sort)
+
+if [[ -d "$SKILL_DIR" ]]; then
+  while IFS= read -r file; do
+    TARGETS+=("$file")
+  done < <(find "$SKILL_DIR" -type f -name '*.md' | sort)
+fi
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+  echo "no markdown command docs found under ${DOC_DIR} or ${SKILL_DIR}" >&2
+  exit 1
+fi
+
+if rg -n "$PATTERN" "${TARGETS[@]}" >/tmp/agentkit-command-violations.txt; then
   echo "disallowed shell pattern found in command docs:" >&2
   cat /tmp/agentkit-command-violations.txt >&2
   echo "replace with narrow wrappers or just recipes." >&2

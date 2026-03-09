@@ -1,0 +1,4 @@
+version: 1
+display_name: Agentkit TODO Codex
+short_description: Execute agentkit TODO workflows with strict wrapper-based commands and lifecycle logging.
+default_prompt: Use this skill to run TODO.md orchestration and task execution in agentkit with just/agent wrappers only.

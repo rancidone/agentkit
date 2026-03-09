@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="${1:-$HOME/.local/bin}"
+SKILLS_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
+
+mkdir -p "$BIN_DIR"
+
+TOOLS=(
+  agent-install-global-tools
+  agentkit
+  agent-index
+  agent-index-refresh-light
+  agent-index-refresh-full
+  agent-telemetry
+  agent-telemetry-ingest
+  agent-telemetry-report
+  agent-telemetry-hotspots
+  agent-telemetry-strict
+  agent-log
+  agent-log-task-started
+  agent-log-task-complete
+  agent-log-task-failed
+  agent-log-worker-spawned
+  agent-log-worker-merged
+  agent-session-branch
+  agent-command-guard
+  agent-validate-command-docs
+  agent-commit-files
+  agent-weekly-telemetry-gate
+)
+
+for tool in "${TOOLS[@]}"; do
+  if [[ ! -x "${SCRIPT_DIR}/${tool}" ]]; then
+    echo "missing executable in repo: ${tool}" >&2
+    exit 1
+  fi
+  ln -sfn "${SCRIPT_DIR}/${tool}" "${BIN_DIR}/${tool}"
+done
+
+mkdir -p "$SKILLS_DIR"
+ln -sfn "${SCRIPT_DIR}/skills/agentkit-todo-codex" "${SKILLS_DIR}/agentkit-todo-codex"
+
+cat <<EOF
+Installed agentkit tools to: ${BIN_DIR}
+Installed Codex skill to: ${SKILLS_DIR}/agentkit-todo-codex
+Ensure ${BIN_DIR} is in PATH for shell/Codex sessions.
+EOF

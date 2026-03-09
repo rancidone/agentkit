@@ -142,6 +142,33 @@ Validate command docs for banned patterns:
 
 To use them in Claude Code, copy or symlink the files into your local `~/.claude/commands/` directory.
 
+## Codex Integration
+
+An installable Codex skill is included at `skills/agentkit-todo-codex`.
+It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and uses strict `agent-*` wrappers (no shell composition).
+
+Install agentkit tools and the skill globally:
+
+```bash
+./agent-install-global-tools
+```
+
+This installs command symlinks into `~/.local/bin` and links the skill into `$CODEX_HOME/skills` (default `~/.codex/skills`).
+For non-default install location:
+
+```bash
+./agent-install-global-tools /custom/bin/dir
+```
+
+Validate both Claude command docs and Codex skill markdown with:
+
+```bash
+./agent-validate-command-docs .
+```
+
+Ensure the install bin directory is on `PATH` for both your shell and Codex runtime.
+Claude command support remains unchanged and fully supported in parallel.
+
 ## License
 
 MIT
