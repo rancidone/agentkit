@@ -1,0 +1,52 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+default:
+  @just --list
+
+validate-command-docs:
+  ./agent-validate-command-docs .
+
+command-guard cmd:
+  ./agent-command-guard "{{cmd}}"
+
+index-refresh-light:
+  ./agent-index-refresh-light .
+
+index-refresh-full:
+  ./agent-index-refresh-full .
+
+telemetry-ingest repo='.' claude_home="$HOME/.claude" events='.claude/agent-events.jsonl':
+  ./agent-telemetry-ingest "{{repo}}" "{{claude_home}}" "{{events}}"
+
+telemetry-report repo='.' window_days='7':
+  ./agent-telemetry-report "{{repo}}" "{{window_days}}"
+
+telemetry-hotspots repo='.' window_days='7' limit='12':
+  ./agent-telemetry-hotspots "{{repo}}" "{{window_days}}" "{{limit}}"
+
+context-pack task out token_budget='2800' limit='12' repo='.':
+  ./agent-index pack --repo "{{repo}}" --task "{{task}}" --token-budget "{{token_budget}}" --limit "{{limit}}" --out "{{out}}"
+
+task-started task_id session_branch task_text repo='.' events='.claude/agent-events.jsonl':
+  ./agent-log-task-started "{{repo}}" "{{task_id}}" "{{session_branch}}" "{{task_text}}" "{{events}}"
+
+worker-spawned task_id session_branch repo='.' events='.claude/agent-events.jsonl':
+  ./agent-log-worker-spawned "{{repo}}" "{{task_id}}" "{{session_branch}}" "{{events}}"
+
+worker-merged task_id session_branch status='merged' repo='.' events='.claude/agent-events.jsonl':
+  ./agent-log-worker-merged "{{repo}}" "{{task_id}}" "{{session_branch}}" "{{status}}" "{{events}}"
+
+task-completed task_id session_branch repo='.' events='.claude/agent-events.jsonl':
+  ./agent-log-task-complete "{{repo}}" "{{task_id}}" "{{session_branch}}" "{{events}}"
+
+task-failed task_id session_branch status='failed' repo='.' events='.claude/agent-events.jsonl':
+  ./agent-log-task-failed "{{repo}}" "{{task_id}}" "{{session_branch}}" "{{status}}" "{{events}}"
+
+session-branch prefix='todo':
+  ./agent-session-branch "{{prefix}}"
+
+commit-all message_file:
+  ./agent-commit-files --message-file "{{message_file}}"
+
+commit-files message_file +files:
+  ./agent-commit-files --message-file "{{message_file}}" --files {{files}}

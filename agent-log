@@ -1,48 +1,62 @@
-#!/usr/bin/env bash
-# agent-log — append a JSONL event to the agent events log
-# Usage: agent-log --events <path> --event-type <type> [--field key=value ...]
-#
-# Example:
-#   agent-log --events .claude/agent-events.jsonl \
-#     --event-type task_started \
-#     --field task_id=phase4-fw \
-#     --field "task_text=Add cook_profile_t struct"
+#!/usr/bin/env python3
+"""agent-log - append a JSONL event to the agent events log.
 
-set -euo pipefail
+Usage:
+  agent-log --events <path> --event-type <type> [--field key=value ...]
+"""
 
-EVENTS_FILE=""
-EVENT_TYPE=""
-declare -A FIELDS
+from __future__ import annotations
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --events)    EVENTS_FILE="$2"; shift 2 ;;
-    --event-type) EVENT_TYPE="$2"; shift 2 ;;
-    --field)
-      KEY="${2%%=*}"
-      VAL="${2#*=}"
-      FIELDS["$KEY"]="$VAL"
-      shift 2
-      ;;
-    *) echo "Unknown arg: $1" >&2; exit 1 ;;
-  esac
-done
+import argparse
+import datetime as dt
+import json
+import os
+import sys
 
-[[ -z "$EVENTS_FILE" ]] && { echo "--events required" >&2; exit 1; }
-[[ -z "$EVENT_TYPE" ]] && { echo "--event-type required" >&2; exit 1; }
 
-# Build JSON object
-TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-JSON="{\"event_type\":\"${EVENT_TYPE}\",\"timestamp\":\"${TIMESTAMP}\""
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="agent-log")
+    parser.add_argument("--events", required=True)
+    parser.add_argument("--event-type", required=True)
+    parser.add_argument("--field", action="append", default=[])
+    return parser.parse_args()
 
-for KEY in "${!FIELDS[@]}"; do
-  VAL="${FIELDS[$KEY]}"
-  # Escape double quotes in value
-  VAL="${VAL//\"/\\\"}"
-  JSON+=",\"${KEY}\":\"${VAL}\""
-done
 
-JSON+="}"
+def parse_field(raw: str) -> tuple[str, str]:
+    if "=" not in raw:
+        raise ValueError(f"invalid --field '{raw}': expected key=value")
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    if not key:
+        raise ValueError(f"invalid --field '{raw}': key cannot be empty")
+    return key, value
 
-mkdir -p "$(dirname "$EVENTS_FILE")"
-echo "$JSON" >> "$EVENTS_FILE"
+
+def main() -> int:
+    args = parse_args()
+
+    payload: dict[str, str] = {
+        "event_type": args.event_type,
+        "timestamp": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    try:
+        for raw in args.field:
+            k, v = parse_field(raw)
+            payload[k] = v
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    events_file = args.events
+    events_dir = os.path.dirname(events_file) or "."
+    os.makedirs(events_dir, exist_ok=True)
+
+    with open(events_file, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

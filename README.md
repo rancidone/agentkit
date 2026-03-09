@@ -24,9 +24,10 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ./agent-index build --repo . --mode full
 ./agent-index pack --repo . --task "implement SSE endpoint" --out /tmp/pack.json
 
-./agent-telemetry ingest --repo . --claude-home ~/.claude --events ./.claude/agent-events.jsonl
-./agent-telemetry report --repo . --window-days 7
-./agent-telemetry hotspots --repo . --window-days 7 --limit 12
+./agent-index-refresh-light .
+./agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl
+./agent-telemetry-report . 7
+./agent-telemetry-hotspots . 7 12
 ./agent-telemetry-strict --repo . --window-days 7 --enforce
 ```
 
@@ -43,18 +44,19 @@ Required fields:
 Examples:
 
 ```bash
-./agent-log --events ./.claude/agent-events.jsonl --event-type task_started \
-  --field repo="$(pwd)" --field task_id="phase4-fw" --field session_branch="todo/20260308-130742"
-
-./agent-log --events ./.claude/agent-events.jsonl --event-type task_completed \
-  --field repo="$(pwd)" --field task_id="phase4-fw" --field session_branch="todo/20260308-130742"
+./agent-log-task-started . phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
+./agent-log-task-complete . phase4-fw todo/20260308-130742
 ```
 
 Agentkit wrappers:
 
 ```bash
-./agent-log-task-complete /path/to/repo phase4-fw todo/20260308-130742
-./agent-weekly-telemetry-gate /path/to/repo 7 "$HOME/.claude" "$HOME/.claude/tools/agentkit/.claude/agent-events.jsonl"
+just task-started phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
+just task-completed phase4-fw todo/20260308-130742
+just telemetry-ingest
+just telemetry-report
+just telemetry-hotspots
+./agent-weekly-telemetry-gate /path/to/repo 7 "$HOME/.claude" "/path/to/repo/.claude/agent-events.jsonl"
 ```
 
 
@@ -130,7 +132,13 @@ Template: `examples/custom_adapter.py`
 ## Claude Commands (Portable)
 
 Portable Claude command markdown lives in `claude/commands/`.
-These commands invoke `agent-index`, `agent-telemetry`, and `agent-log` via `PATH` (no hardcoded home-directory tool paths).
+These commands invoke scoped wrappers and `just` recipes (no shell composition, no multiline chains).
+
+Validate command docs for banned patterns:
+
+```bash
+./agent-validate-command-docs .
+```
 
 To use them in Claude Code, copy or symlink the files into your local `~/.claude/commands/` directory.
 

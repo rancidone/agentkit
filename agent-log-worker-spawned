@@ -9,14 +9,12 @@ fi
 REPO_PATH="$(cd "$1" && pwd)"
 TASK_ID="$2"
 SESSION_BRANCH="$3"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVENTS_FILE="${4:-${REPO_PATH}/.claude/agent-events.jsonl}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 "${SCRIPT_DIR}/agent-log" \
   --events "${EVENTS_FILE}" \
-  --event-type task_completed \
+  --event-type worker_spawned \
   --field "repo=${REPO_PATH}" \
   --field "task_id=${TASK_ID}" \
   --field "session_branch=${SESSION_BRANCH}"
-
-echo "logged task_completed repo=${REPO_PATH} task_id=${TASK_ID} session_branch=${SESSION_BRANCH}"

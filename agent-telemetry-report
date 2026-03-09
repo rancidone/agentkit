@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${1:-.}"
+WINDOW_DAYS="${2:-7}"
+
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" report --repo "$REPO" --window-days "$WINDOW_DAYS"

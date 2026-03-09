@@ -10,7 +10,7 @@ AGENTKIT_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$1" && pwd)"
 WINDOW_DAYS="${2:-7}"
 CLAUDE_HOME="${3:-$HOME/.claude}"
-EVENTS_FILE="${4:-${AGENTKIT_BIN}/.claude/agent-events.jsonl}"
+EVENTS_FILE="${4:-${REPO_ROOT}/.claude/agent-events.jsonl}"
 STRICT_JSON="${REPO_ROOT}/.claude/telemetry-strict.json"
 WEEKLY_MD="${REPO_ROOT}/.claude/telemetry-weekly.md"
 

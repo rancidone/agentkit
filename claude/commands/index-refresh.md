@@ -1,17 +1,24 @@
 ---
 allowed-tools: Bash
-description: Refresh agent index for current repo (light by default)
+description: Refresh agent index via scoped just recipes
 ---
 
-Run:
+Run a guarded index refresh.
+
+1. Validate command docs are safe:
 
 ```bash
-command -v agent-index
-agent-index refresh --repo . --mode light
+just validate-command-docs
 ```
 
-If arguments include `full`, run:
+2. Default refresh mode:
 
 ```bash
-agent-index refresh --repo . --mode full
+just index-refresh-light
+```
+
+3. If arguments include `full`, run:
+
+```bash
+just index-refresh-full
 ```

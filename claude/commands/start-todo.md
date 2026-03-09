@@ -1,9 +1,9 @@
 ---
 allowed-tools: all
-description: Orchestrate TODO.md with bounded parallelism, context packs, telemetry, and soft tool governance
+description: Orchestrate TODO.md using scoped lifecycle commands and just recipes
 ---
 
-# TODO Orchestrator v1.2 (Portable)
+# TODO Orchestrator v2.0 (Scoped)
 
 ARGS: optional `--max-parallel N` (default `2`, max `3`).
 
@@ -12,124 +12,122 @@ ARGS: optional `--max-parallel N` (default `2`, max `3`).
 - TODO source: `TODO.md`
 - Repo config: `agentkit.json` (fallback `.claude/agentkit.json`)
 - Event log: `.claude/agent-events.jsonl`
-- Required CLIs on `PATH`: `agent-index`, `agent-telemetry`, `agent-log`
+- Required CLIs: `just`, `agent-index`, `agent-telemetry`, `agent-log`
 
 ## Setup
 
-1. Verify required CLIs are available:
+1. Validate command docs and guardrails:
 
 ```bash
-command -v agent-index agent-telemetry agent-log
+just validate-command-docs
 ```
 
-2. Determine parallelism from args:
-- If missing, use `2`
-- Clamp to `1..3`
-
-3. Refresh metadata index before planning:
+2. Reject unsafe ad-hoc command shapes before running custom commands:
 
 ```bash
-agent-index refresh --repo . --mode full
+just command-guard "<candidate-command>"
 ```
 
-4. Start telemetry ingestion baseline:
+3. Refresh full index baseline:
 
 ```bash
-agent-telemetry ingest --repo . --claude-home ~/.claude --events ./.claude/agent-events.jsonl
+just index-refresh-full
 ```
 
-5. Create a unique session branch (unless already on `todo/*`):
+4. Ingest telemetry baseline:
 
 ```bash
-git branch --show-current
-git checkout -b todo/$(date +%Y%m%d-%H%M%S)
+just telemetry-ingest
 ```
 
-Record this as `SESSION_BRANCH`.
+5. Create or reuse the session branch:
+
+```bash
+just session-branch todo
+```
+
+Record this output as `SESSION_BRANCH`.
 
 ## Task Selection Rules
 
-- Read unchecked `[ ]` items in TODO.md.
-- Respect phase order (no later phase before earlier unfinished phase).
-- Only select independent tasks (no shared primary files, no direct dependency chain).
-- Always keep up to `N` active workers while eligible tasks remain.
+- Read unchecked `[ ]` items in `TODO.md`.
+- Respect phase order.
+- Select only independent tasks.
+- Keep up to `N` active workers while eligible tasks remain.
 
 ## Per-Task Dispatch
 
-For each selected task:
+For each selected task, run:
 
-1. Create a context pack:
-
-```bash
-agent-index pack --repo . --task "<exact task text>" --token-budget 2800 --out /tmp/agentpack-<id>.json
-```
-
-2. Append `task_started` event:
+1. Build task context pack:
 
 ```bash
-agent-log --events .claude/agent-events.jsonl \
-  --event-type task_started \
-  --field repo="$(pwd)" \
-  --field session_branch=<SESSION_BRANCH> \
-  --field task_id=<task_id> \
-  --field "task_text=<exact task text>"
+just context-pack "<exact task text>" "/tmp/agentpack-<id>.json"
 ```
 
-3. Spawn worker agent in `isolation: "worktree"`.
-
-Also append `worker_spawned` event:
+2. Log lifecycle start:
 
 ```bash
-agent-log --events .claude/agent-events.jsonl \
-  --event-type worker_spawned \
-  --field repo="$(pwd)" \
-  --field task_id=<task_id> \
-  --field session_branch=<SESSION_BRANCH>
+just task-started "<task_id>" "<SESSION_BRANCH>" "<exact task text>"
 ```
 
-## Merge Gate (Balanced)
+3. Spawn worker in worktree isolation and log worker start:
 
-As each worker finishes (do not wait for full batch):
+```bash
+just worker-spawned "<task_id>" "<SESSION_BRANCH>"
+```
+
+## Merge Gate
+
+As each worker finishes:
 
 1. Verify merge target is not `main` or `develop`.
-2. Run changed-scope checks (based on changed files + `agentkit.json` hints).
-3. Run policy checks:
-- no banned broad-scan patterns used in worker notes
-- no unbounded-output command usage
-4. Merge worker branch into `SESSION_BRANCH`.
-5. Resolve conflicts and commit if needed.
-6. Mark TODO item `[x]` and commit TODO update.
-7. Append events:
+2. Run changed-scope checks and policy checks.
+3. Merge worker branch into `SESSION_BRANCH`.
+4. Mark TODO item `[x]`.
+5. Log completion:
 
 ```bash
-agent-log --events .claude/agent-events.jsonl \
-  --event-type worker_merged \
-  --field repo="$(pwd)" \
-  --field task_id=<task_id> \
-  --field session_branch=<SESSION_BRANCH>
-
-agent-log --events .claude/agent-events.jsonl \
-  --event-type task_completed \
-  --field repo="$(pwd)" \
-  --field session_branch=<SESSION_BRANCH> \
-  --field task_id=<task_id>
-# Use task_failed instead of task_completed if gate fails
+just worker-merged "<task_id>" "<SESSION_BRANCH>" merged
 ```
-
-After each merge, run light refresh + telemetry ingest:
 
 ```bash
-agent-index refresh --repo . --mode light
-agent-telemetry ingest --repo . --claude-home ~/.claude --events ./.claude/agent-events.jsonl
+just task-completed "<task_id>" "<SESSION_BRANCH>"
 ```
+
+If merge gate fails, record:
+
+```bash
+just task-failed "<task_id>" "<SESSION_BRANCH>" failed
+```
+
+After each merge, refresh baseline data:
+
+```bash
+just index-refresh-light
+```
+
+```bash
+just telemetry-ingest
+```
+
+## Lifecycle Command Requirement
+
+Use lifecycle commands for implementation and validation flow:
+
+- `/next <task>` to execute implementation workflow
+- `/check` to fix quality issues
+- `/validate` for deep validation
+- `/prompt <task>` to synthesize complete execution prompts
 
 ## Finish
 
-When no unchecked TODO items remain:
+```bash
+just telemetry-report
+```
 
 ```bash
-agent-telemetry report --repo . --window-days 7
-agent-telemetry hotspots --repo . --window-days 7 --limit 12
+just telemetry-hotspots
 ```
 
 Never merge into `main` or `develop` from this command.

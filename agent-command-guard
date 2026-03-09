@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 '<command-string>'" >&2
+  exit 1
+fi
+
+CMD="$1"
+
+fail() {
+  local reason="$1"
+  echo "unsafe command shape rejected: ${reason}" >&2
+  echo "use narrow wrappers/recipes instead:" >&2
+  echo "- just index-refresh-light | just index-refresh-full" >&2
+  echo "- just telemetry-ingest | just telemetry-report | just telemetry-hotspots" >&2
+  echo "- just task-started/task-completed/task-failed" >&2
+  echo "- ./agent-commit-files --message-file <path> [--files <paths...>]" >&2
+  exit 2
+}
+
+if [[ "$CMD" == *'$('* ]]; then
+  fail "subshell expansion \$(...) is disallowed"
+fi
+if [[ "$CMD" == *'<<'* ]]; then
+  fail "heredoc/herestring usage is disallowed"
+fi
+if [[ "$CMD" == *'2>&1 | tail'* || "$CMD" == *'2>&1|tail'* ]]; then
+  fail "2>&1 | tail pattern is disallowed"
+fi
+if [[ "$CMD" == *'&&'* || "$CMD" == *'||'* || "$CMD" == *';'* ]]; then
+  fail "command chaining is disallowed"
+fi
+if [[ "$CMD" == *'|'* ]]; then
+  fail "pipes are disallowed"
+fi
+
+printf '%s\n' "command shape OK"

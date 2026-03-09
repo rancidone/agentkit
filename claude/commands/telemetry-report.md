@@ -1,28 +1,28 @@
 ---
 allowed-tools: Bash
-description: Ingest Claude logs and print token telemetry reports
+description: Ingest and report telemetry via scoped just recipes
 ---
 
-1. Verify CLI availability:
+1. Validate command docs are safe:
 
 ```bash
-command -v agent-telemetry
+just validate-command-docs
 ```
 
-2. Ingest latest logs and task events:
+2. Ingest telemetry:
 
 ```bash
-agent-telemetry ingest --repo . --claude-home ~/.claude --events ./.claude/agent-events.jsonl
+just telemetry-ingest
 ```
 
-3. Print summary:
+3. Print report:
 
 ```bash
-agent-telemetry report --repo . --window-days 7
+just telemetry-report
 ```
 
 4. Print hotspots:
 
 ```bash
-agent-telemetry hotspots --repo . --window-days 7 --limit 12
+just telemetry-hotspots
 ```

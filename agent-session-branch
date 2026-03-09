@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PREFIX="${1:-todo}"
+CURRENT_BRANCH="$(git branch --show-current)"
+
+if [[ "$CURRENT_BRANCH" == ${PREFIX}/* ]]; then
+  printf '%s\n' "$CURRENT_BRANCH"
+  exit 0
+fi
+
+BRANCH="${PREFIX}/$(date +%Y%m%d-%H%M%S)"
+git checkout -b "$BRANCH" >/dev/null
+printf '%s\n' "$BRANCH"

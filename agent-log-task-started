@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 4 ]]; then
+  echo "Usage: $0 <repo_path> <task_id> <session_branch> <task_text> [events_file]" >&2
+  exit 1
+fi
+
+REPO_PATH="$(cd "$1" && pwd)"
+TASK_ID="$2"
+SESSION_BRANCH="$3"
+TASK_TEXT="$4"
+EVENTS_FILE="${5:-${REPO_PATH}/.claude/agent-events.jsonl}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+"${SCRIPT_DIR}/agent-log" \
+  --events "${EVENTS_FILE}" \
+  --event-type task_started \
+  --field "repo=${REPO_PATH}" \
+  --field "task_id=${TASK_ID}" \
+  --field "session_branch=${SESSION_BRANCH}" \
+  --field "task_text=${TASK_TEXT}"

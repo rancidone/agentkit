@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${1:-.}"
+WINDOW_DAYS="${2:-7}"
+LIMIT="${3:-12}"
+
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" hotspots --repo "$REPO" --window-days "$WINDOW_DAYS" --limit "$LIMIT"

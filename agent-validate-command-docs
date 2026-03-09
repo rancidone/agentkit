@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${1:-.}"
+DOC_DIR="${ROOT}/claude/commands"
+
+if [[ ! -d "$DOC_DIR" ]]; then
+  echo "missing command docs directory: ${DOC_DIR}" >&2
+  exit 1
+fi
+
+PATTERN='\$\(|<<|2>&1[[:space:]]*\|[[:space:]]*tail|&&|\|\||\\$'
+if rg -n "$PATTERN" "$DOC_DIR"/*.md >/tmp/agentkit-command-violations.txt; then
+  echo "disallowed shell pattern found in command docs:" >&2
+  cat /tmp/agentkit-command-violations.txt >&2
+  echo "replace with narrow wrappers or just recipes." >&2
+  exit 2
+fi
+
+echo "command docs validation OK"

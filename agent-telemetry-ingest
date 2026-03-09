@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${1:-.}"
+CLAUDE_HOME="${2:-$HOME/.claude}"
+EVENTS="${3:-.claude/agent-events.jsonl}"
+
+"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" ingest --repo "$REPO" --claude-home "$CLAUDE_HOME" --events "$EVENTS"
