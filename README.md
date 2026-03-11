@@ -140,6 +140,18 @@ Validate command docs for banned patterns:
 ./agent-validate-command-docs .
 ```
 
+Guard-friendly command patterns:
+
+```bash
+# Logging lifecycle events: use repo "." with wrapper-compatible args
+./agent-log-worker-merged . phase7-build todo/20260308-151125 merged .claude/agent-events.jsonl
+./agent-log-task-complete . phase7-build todo/20260308-151125 .claude/agent-events.jsonl
+
+# Commit flow: write message file, then use scoped commit wrapper
+printf '%s\n' "feat: phase 7 build pipeline" "" "- Add build-all.sh and docs updates" > /tmp/commit-msg.txt
+./agent-commit-files --message-file /tmp/commit-msg.txt --files firmware/CMakeLists.txt thermometer-ui/vite.config.ts README.md build-all.sh
+```
+
 To use them in Claude Code, copy or symlink the files into your local `~/.claude/commands/` directory.
 
 ## Codex Integration

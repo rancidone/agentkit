@@ -39,3 +39,6 @@ pip-wheel-metadata/
 
 # macOS
 .DS_Store
+
+# local docs
+.docs/

@@ -33,6 +33,9 @@ just session-branch feat
 - Replace old code paths directly; no versioned forks.
 - Keep error handling at real boundaries.
 - Add comments only for non-obvious logic.
+- Keep command shape guard-friendly: no subshell expansion, heredocs, or command chaining in workflow commands.
+- For lifecycle logging, use repo `.` with wrappers (`just task-started`, `just task-completed`) instead of deriving repo paths dynamically.
+- For commits, write message text to a file and use `agent-commit-files --message-file <path>`.
 
 ## Completion
 

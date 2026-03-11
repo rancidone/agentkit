@@ -15,6 +15,8 @@ fail() {
   echo "- just index-refresh-light | just index-refresh-full" >&2
   echo "- just telemetry-ingest | just telemetry-report | just telemetry-hotspots" >&2
   echo "- just task-started/task-completed/task-failed" >&2
+  echo "- use repo='.' for repo-scoped wrappers (not repo=\"\$(pwd)\")" >&2
+  echo "- write commit messages to a file, then run: ./agent-commit-files --message-file <path>" >&2
   echo "- ./agent-commit-files --message-file <path> [--files <paths...>]" >&2
   exit 2
 }
