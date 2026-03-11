@@ -105,7 +105,7 @@ def parse_tasks_from_todo(repo: str) -> list[dict[str, Any]]:
     return tasks
 
 
-def build_index(repo: str, mode: str) -> dict[str, Any]:
+def build_index(repo: str, mode: str, allow_custom_adapters: bool = False) -> dict[str, Any]:
     cfg = load_repo_config(repo)
     excludes = set(DEFAULT_EXCLUDES)
     excludes.update(set(cfg.get("index", {}).get("exclude_paths", [])))
@@ -114,7 +114,7 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
     extract_enabled = bool(extract_cfg.get("enabled", True))
     extract_max_file_bytes = int(extract_cfg.get("max_file_bytes", max_file_bytes))
     language_layers: dict[str, str] = extract_cfg.get("languages", {})
-    adapters = load_adapters(repo, cfg)
+    adapters = load_adapters(repo, cfg, allow_custom=allow_custom_adapters)
 
     conn = open_db(db_path(repo))
     now = time.time()
@@ -426,7 +426,7 @@ def query_by_id(repo: str, task_id: str) -> str | None:
 
 def cmd_build(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
-    out = build_index(repo, args.mode)
+    out = build_index(repo, args.mode, allow_custom_adapters=getattr(args, "allow_custom_adapters", False))
     print(json.dumps(out, indent=2))
     return 0
 
@@ -434,7 +434,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 def cmd_refresh(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
     mode = "light" if args.mode == "light" else "full"
-    out = build_index(repo, mode)
+    out = build_index(repo, mode, allow_custom_adapters=getattr(args, "allow_custom_adapters", False))
     print(json.dumps(out, indent=2))
     return 0
 
@@ -501,11 +501,13 @@ def parser() -> argparse.ArgumentParser:
     p_build = sp.add_parser("build")
     p_build.add_argument("--repo", default=".")
     p_build.add_argument("--mode", choices=["full", "light"], default="full")
+    p_build.add_argument("--allow-custom-adapters", action="store_true", default=False)
     p_build.set_defaults(func=cmd_build)
 
     p_refresh = sp.add_parser("refresh")
     p_refresh.add_argument("--repo", default=".")
     p_refresh.add_argument("--mode", choices=["light", "full"], default="light")
+    p_refresh.add_argument("--allow-custom-adapters", action="store_true", default=False)
     p_refresh.set_defaults(func=cmd_refresh)
 
     p_query = sp.add_parser("query")

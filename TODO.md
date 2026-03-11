@@ -61,11 +61,11 @@ only in content, and symbol scoring uses hardcoded domain terms instead of task 
 
 Add JSON schema validation for `agentkit.json` and a trust gate for Python adapter loading.
 
-- [ ] Define JSON schema for `agentkit.json` as a Python dict constant in `agentkit_common.py` covering all config sections
-- [ ] Add `validate_repo_config(cfg) -> list[str]` to `agentkit_common.py`; call from `load_repo_config` with stderr warnings (non-fatal)
-- [ ] Add `allow_custom_adapters` boolean key (default `false`) to `extract` schema; skip python-type adapters with clear stderr error when absent or false
-- [ ] Add `--allow-custom-adapters` CLI flag to `agent-index build` and `agent-index refresh`
-- [ ] Write unit tests for `validate_repo_config` schema violations and adapter trust gate behavior
+- [x] Define JSON schema for `agentkit.json` as a Python dict constant in `agentkit_common.py` covering all config sections
+- [x] Add `validate_repo_config(cfg) -> list[str]` to `agentkit_common.py`; call from `load_repo_config` with stderr warnings (non-fatal)
+- [x] Add `allow_custom_adapters` boolean key (default `false`) to `extract` schema; skip python-type adapters with clear stderr error when absent or false
+- [x] Add `--allow-custom-adapters` CLI flag to `agent-index build` and `agent-index refresh`
+- [x] Write unit tests for `validate_repo_config` schema violations and adapter trust gate behavior
 
 ## Phase 4: Telemetry Trend Exposure
 

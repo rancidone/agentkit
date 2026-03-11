@@ -254,11 +254,15 @@ def _compile_patterns(raw_patterns: list[str]) -> list[re.Pattern[str]]:
     return out
 
 
-def load_adapters(repo: str, cfg: dict[str, Any]) -> list[Adapter]:
+def load_adapters(repo: str, cfg: dict[str, Any], allow_custom: bool = False) -> list[Adapter]:
     out: list[Adapter] = []
-    adapters_cfg = cfg.get("extract", {}).get("adapters", [])
+    extract_cfg = cfg.get("extract", {})
+    adapters_cfg = extract_cfg.get("adapters", [])
     if not isinstance(adapters_cfg, list):
         return out
+
+    # Trust gate: python-type adapters require explicit opt-in
+    custom_allowed = allow_custom or bool(extract_cfg.get("allow_custom_adapters", False))
 
     for item in adapters_cfg:
         if isinstance(item, str):
@@ -275,6 +279,14 @@ def load_adapters(repo: str, cfg: dict[str, Any]) -> list[Adapter]:
             if ad_type == "builtin":
                 fn = _builtin_adapter_fn(name)
             elif ad_type == "python":
+                if not custom_allowed:
+                    import sys
+                    print(
+                        f"[agentkit] skipping python adapter '{name}': allow_custom_adapters is false. "
+                        "Set allow_custom_adapters: true in agentkit.json or pass --allow-custom-adapters.",
+                        file=sys.stderr,
+                    )
+                    continue
                 fn = _load_custom_adapter(repo, item)
             else:
                 continue

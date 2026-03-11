@@ -9,6 +9,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 from typing import Any
 
 
@@ -85,6 +86,66 @@ def write_json(path: str, data: dict[str, Any]) -> None:
         fh.write("\n")
 
 
+AGENTKIT_CONFIG_SCHEMA: dict[str, Any] = {
+    "index": {
+        "_type": "object",
+        "exclude_paths": {"_type": "list"},
+        "max_file_bytes": {"_type": "int"},
+    },
+    "extract": {
+        "_type": "object",
+        "enabled": {"_type": "bool"},
+        "max_file_bytes": {"_type": "int"},
+        "languages": {"_type": "object"},
+        "allow_custom_adapters": {"_type": "bool"},
+        "adapters": {"_type": "list"},
+    },
+    "context": {
+        "_type": "object",
+        "max_snippets_total": {"_type": "int"},
+        "max_snippets_per_file": {"_type": "int"},
+        "prefer_symbol_blocks": {"_type": "bool"},
+        "max_files_per_pack": {"_type": "int"},
+        "max_tests_per_pack": {"_type": "int"},
+        "default_token_budget": {"_type": "int"},
+        "max_read_chunk_lines": {"_type": "int"},
+        "synonyms": {"_type": "object"},
+    },
+    "test_hints": {"_type": "object"},
+}
+
+_SCALAR_TYPE_MAP = {"int": int, "bool": bool, "str": str, "object": dict, "list": list}
+
+
+def validate_repo_config(cfg: dict[str, Any]) -> list[str]:
+    """Validate agentkit.json config against schema. Returns list of warning strings."""
+    errors: list[str] = []
+    if not isinstance(cfg, dict):
+        return ["agentkit.json root must be a JSON object"]
+
+    for section, section_schema in AGENTKIT_CONFIG_SCHEMA.items():
+        if section not in cfg:
+            continue
+        val = cfg[section]
+        expected_type = section_schema.get("_type", "object")
+        py_type = _SCALAR_TYPE_MAP.get(expected_type, dict)
+        if not isinstance(val, py_type):
+            errors.append(f"agentkit.json: '{section}' should be a {expected_type}, got {type(val).__name__}")
+            continue
+        if isinstance(val, dict) and isinstance(section_schema, dict):
+            for key, key_schema in section_schema.items():
+                if key == "_type" or key not in val:
+                    continue
+                kval = val[key]
+                ktype = key_schema.get("_type", "str")
+                kpy = _SCALAR_TYPE_MAP.get(ktype, str)
+                if not isinstance(kval, kpy):
+                    errors.append(
+                        f"agentkit.json: '{section}.{key}' should be a {ktype}, got {type(kval).__name__}"
+                    )
+    return errors
+
+
 def load_repo_config(repo: str) -> dict[str, Any]:
     candidates = [
         os.path.join(repo, ".claude", "agentkit.json"),
@@ -92,7 +153,10 @@ def load_repo_config(repo: str) -> dict[str, Any]:
     ]
     for cfg_path in candidates:
         if os.path.exists(cfg_path):
-            return read_json(cfg_path)
+            cfg = read_json(cfg_path)
+            for warning in validate_repo_config(cfg):
+                print(f"[agentkit warning] {warning}", file=sys.stderr)
+            return cfg
     return {}
 
 
