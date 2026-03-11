@@ -95,6 +95,27 @@ class TestTokenize(unittest.TestCase):
         tokens = _tokenize("")
         self.assertEqual(tokens, [])
 
+    def test_repo_synonyms_merged(self):
+        cfg = {"context": {"synonyms": {"cache": ["redis", "memcache"]}}}
+        tokens = _tokenize("invalidate cache", cfg)
+        self.assertIn("redis", tokens)
+        self.assertIn("memcache", tokens)
+
+    def test_repo_synonyms_override_builtin(self):
+        # Repo can override built-in synonym mapping
+        cfg = {"context": {"synonyms": {"sse": ["custom_event"]}}}
+        tokens = _tokenize("handle sse stream", cfg)
+        self.assertIn("custom_event", tokens)
+
+    def test_no_cfg_uses_builtin_only(self):
+        tokens = _tokenize("handle sse", None)
+        self.assertIn("live", tokens)  # built-in synonym still present
+
+    def test_empty_synonyms_cfg(self):
+        cfg = {"context": {"synonyms": {}}}
+        tokens = _tokenize("handle sse", cfg)
+        self.assertIn("live", tokens)  # built-in still works
+
 
 class TestScoreCandidates(unittest.TestCase):
     def setUp(self):
@@ -123,16 +144,48 @@ class TestScoreCandidates(unittest.TestCase):
         results = _score_candidates(self.repo, "anything routes api", 2)
         self.assertLessEqual(len(results), 2)
 
-    def test_returns_tuples_of_4(self):
+    def test_returns_tuples_of_5(self):
+        # Returns (score, path, role, is_test, debug_dict)
         results = _score_candidates(self.repo, "routes endpoint", 10)
         for r in results:
-            self.assertEqual(len(r), 4)
+            self.assertEqual(len(r), 5)
+            self.assertIsInstance(r[4], dict)
+            self.assertIn("path_score", r[4])
 
     def test_fallback_when_no_match(self):
         # A task with no token matches falls back to api/view/model/test files
         results = _score_candidates(self.repo, "zzz yyy xxx", 10)
         # Should still return something (fallback)
         self.assertGreater(len(results), 0)
+
+    def test_debug_has_all_fields(self):
+        results = _score_candidates(self.repo, "fix telemetry ingest", 10)
+        for score, path, role, is_test, debug in results:
+            self.assertIn("path_score", debug)
+            self.assertIn("content_score", debug)
+            self.assertIn("symbol_score", debug)
+
+    def test_content_grep_boosts_keyword_match(self):
+        # Write a file with a unique keyword that won't be in the path
+        unique_file = os.path.join(self.repo, "utils.py")
+        with open(unique_file, "w") as f:
+            f.write("# xyzretrylogicxyz\n" * 10)
+        # Insert it into the DB
+        conn = open_db(db_path(self.repo))
+        now = time.time()
+        conn.execute(
+            "INSERT OR REPLACE INTO files(repo,path,role,ext,is_test,size,mtime,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            (self.repo, "utils.py", "code", ".py", 0, 100, now, now),
+        )
+        conn.commit()
+        results = _score_candidates(self.repo, "xyzretrylogicxyz", 10)
+        paths = [r[1] for r in results]
+        # Should find utils.py via content grep even though keyword not in path
+        self.assertIn("utils.py", paths)
+        # content_score should be > 0 for utils.py
+        for score, path, role, is_test, debug in results:
+            if path == "utils.py":
+                self.assertGreater(debug["content_score"], 0)
 
 
 class TestParseTasksFromTodo(unittest.TestCase):

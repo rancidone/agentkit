@@ -209,7 +209,7 @@ def build_index(repo: str, mode: str) -> dict[str, Any]:
     }
 
 
-def _tokenize(task_text: str) -> list[str]:
+def _tokenize(task_text: str, cfg: dict[str, Any] | None = None) -> list[str]:
     normalized = (
         task_text.lower()
         .replace("`", " ")
@@ -220,37 +220,75 @@ def _tokenize(task_text: str) -> list[str]:
     )
     tokens = [t for t in normalized.split() if len(t) > 2]
     tokens = list(dict.fromkeys(tokens))[:40]
-    synonyms = {
+    built_in_synonyms: dict[str, list[str]] = {
         "sse": ["events", "event", "routes_events", "live"],
         "endpoint": ["route", "routes", "api", "http_server"],
         "wire": ["store", "live", "events", "client"],
         "ui": ["svelte", "view", "components", "src"],
     }
+    repo_synonyms: dict[str, list[str]] = {}
+    if cfg:
+        repo_synonyms = cfg.get("context", {}).get("synonyms", {})
+    synonyms = {**built_in_synonyms, **repo_synonyms}
     expanded = list(tokens)
     for tok in tokens:
         expanded.extend(synonyms.get(tok, []))
     return list(dict.fromkeys(expanded))
 
 
-def _score_candidates(repo: str, task_text: str, limit: int) -> list[tuple[float, str, str, int]]:
+def _score_candidates(
+    repo: str,
+    task_text: str,
+    limit: int,
+    cfg: dict[str, Any] | None = None,
+) -> list[tuple[float, str, str, int, dict[str, float]]]:
+    """Score repo files by relevance to task_text.
+
+    Returns list of (score, path, role, is_test, debug) sorted by score desc.
+    debug dict contains path_score, content_score, symbol_score breakdowns.
+    """
     conn = open_db(db_path(repo))
-    tokens = _tokenize(task_text)
+    tokens = _tokenize(task_text, cfg)
     cur = conn.execute("SELECT path, role, is_test FROM files WHERE repo = ?", (repo,))
-    scored: list[tuple[float, str, str, int]] = []
     lower_task = task_text.lower()
 
+    path_scored: list[tuple[float, str, str, int]] = []
     for path, role, is_test in cur.fetchall():
         p = path.lower()
-        score = 0.0
+        path_score = 0.0
         for tok in tokens:
             if tok in p:
-                score += 5.0
+                path_score += 5.0
         if role == "api" and ("route" in lower_task or "endpoint" in lower_task):
-            score += 2.0
+            path_score += 2.0
         if role == "view" and ("ui" in lower_task or "svelte" in lower_task):
-            score += 2.0
+            path_score += 2.0
         if role == "test":
-            score += 0.5
+            path_score += 0.5
+        path_scored.append((path_score, path, role, is_test))
+
+    path_scored.sort(key=lambda x: (-x[0], x[1]))
+
+    # Content-grep pass: read first 300 lines of top-30 candidates for token matches
+    content_bonuses: dict[str, float] = {}
+    for path_s, path, role, is_test in path_scored[:30]:
+        full = os.path.join(repo, path)
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                content_lines = [fh.readline() for _ in range(300)]
+            content_lower = "".join(content_lines).lower()
+            bonus = 0.0
+            for tok in tokens:
+                if tok in content_lower:
+                    bonus = min(bonus + 1.0, 4.0)
+            if bonus > 0:
+                content_bonuses[path] = bonus
+        except OSError:
+            pass
+
+    scored: list[tuple[float, str, str, int, dict[str, float]]] = []
+    for path_s, path, role, is_test in path_scored:
+        content_s = content_bonuses.get(path, 0.0)
 
         sym_hit = conn.execute(
             """
@@ -261,11 +299,12 @@ def _score_candidates(repo: str, task_text: str, limit: int) -> list[tuple[float
             """,
             (repo, path, "%event%", "%sse%", "%live%"),
         ).fetchone()[0]
-        if sym_hit:
-            score += min(3.0, sym_hit * 0.6)
+        symbol_s = min(3.0, sym_hit * 0.6) if sym_hit else 0.0
 
-        if score > 0:
-            scored.append((score, path, role, is_test))
+        total = path_s + content_s + symbol_s
+        if total > 0:
+            debug = {"path_score": path_s, "content_score": content_s, "symbol_score": symbol_s}
+            scored.append((total, path, role, is_test, debug))
 
     scored.sort(key=lambda x: (-x[0], x[1]))
     if scored:
@@ -281,10 +320,10 @@ def _score_candidates(repo: str, task_text: str, limit: int) -> list[tuple[float
         """,
         (repo, max(limit * 2, 30)),
     ).fetchall()
-    out: list[tuple[float, str, str, int]] = []
+    out: list[tuple[float, str, str, int, dict[str, float]]] = []
     for path, role, is_test in fallback:
         base = 0.5 + (1.2 if role == "api" else 1.0 if role == "view" else 0.8 if role == "model" else 0.3)
-        out.append((base, path, role, is_test))
+        out.append((base, path, role, is_test, {"path_score": base, "content_score": 0.0, "symbol_score": 0.0}))
     return out[:limit]
 
 
@@ -297,7 +336,7 @@ def _pick_snippets(repo: str, task_text: str, file_paths: list[str], cfg: dict[s
     if not prefer_symbols:
         return []
 
-    tokens = _tokenize(task_text)
+    tokens = _tokenize(task_text, cfg)
     snippets: list[dict[str, Any]] = []
 
     for path in file_paths:
@@ -323,8 +362,6 @@ def _pick_snippets(repo: str, task_text: str, file_paths: list[str], cfg: dict[s
             for tok in tokens:
                 if tok in symbol:
                     score += 4.0
-            if any(x in symbol for x in ("event", "sse", "live", "stream", "route", "handler")):
-                score += 1.5
             if score > 0:
                 scored.append((score, r))
 
@@ -357,10 +394,14 @@ def _pick_snippets(repo: str, task_text: str, file_paths: list[str], cfg: dict[s
 
 def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
     cfg = load_repo_config(repo)
-    scored = _score_candidates(repo, task_text, limit)
+    scored = _score_candidates(repo, task_text, limit, cfg)
 
-    files = [{"path": p, "role": r, "score": round(s, 2)} for s, p, r, _ in scored if not _]
-    tests = [p for _, p, _, is_test in scored if is_test]
+    files = [{"path": p, "role": r, "score": round(s, 2)} for s, p, r, _is_test, _dbg in scored if not _is_test]
+    tests = [p for _, p, _, is_test, _dbg in scored if is_test]
+    score_debug = [
+        {"path": p, **dbg, "total": round(s, 2)}
+        for s, p, _r, _is_test, dbg in scored
+    ]
     snippets = _pick_snippets(repo, task_text, [f["path"] for f in files], cfg)
 
     return {
@@ -370,6 +411,7 @@ def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
         "snippets": snippets,
         "test_hints": cfg.get("test_hints", {}),
         "token_budget_hint": cfg.get("context", {}).get("default_token_budget", 3000),
+        "score_debug": score_debug,
     }
 
 

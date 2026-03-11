@@ -51,11 +51,11 @@ regression safety net. Tests live in a new `tests/` directory.
 Fix two concrete scoring defects: path-only scoring misses files where task keywords appear
 only in content, and symbol scoring uses hardcoded domain terms instead of task tokens.
 
-- [ ] Add `synonyms` key to the `context` section of `agentkit.json`; merge repo-defined synonyms with built-in set in `_tokenize`
-- [ ] In `_score_candidates`, add content-grep pass for top-30 path-scored candidates: read first 300 lines, add `+1.0` per task token match, capped at `+4.0` per file
-- [ ] In `_pick_snippets`, replace hardcoded symbol keyword list with task token matching using `_tokenize` output
-- [ ] Add `score_debug` field to `agent-index query` subcommand output with path/content/symbol score breakdown
-- [ ] Write unit tests for updated `_tokenize` with repo-supplied synonyms and content-grep scoring path
+- [x] Add `synonyms` key to the `context` section of `agentkit.json`; merge repo-defined synonyms with built-in set in `_tokenize`
+- [x] In `_score_candidates`, add content-grep pass for top-30 path-scored candidates: read first 300 lines, add `+1.0` per task token match, capped at `+4.0` per file
+- [x] In `_pick_snippets`, replace hardcoded symbol keyword list with task token matching using `_tokenize` output
+- [x] Add `score_debug` field to `agent-index query` subcommand output with path/content/symbol score breakdown
+- [x] Write unit tests for updated `_tokenize` with repo-supplied synonyms and content-grep scoring path
 
 ## Phase 3: Security Hardening
 
