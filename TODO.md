@@ -76,3 +76,13 @@ Surface the `v_trends` view that already exists in the telemetry DB but is never
 - [x] Add `just telemetry-trend` recipe following existing wrapper pattern in justfile
 - [x] Extend `agent-telemetry report` with one-line velocity summary (tasks in window, total tokens, mean duration, trend direction)
 - [x] Write unit tests for `trend` subcommand output format and `--since` date parsing against a synthetic DB
+
+## Phase 5: Tooling Gap Closure
+
+Ad-hoc bash one-liners observed during Phases 1–4 that should become first-class commands or `just` recipes. Each gap represents a recurring manual step that wasn't wrapped.
+
+- [ ] Add `agent-index inspect` subcommand (or `just index-inspect`) that pretty-prints DB stats (file count by role, task count by phase, symbol count, DB path) without requiring ad-hoc `sqlite3` or `python3 -c "..."` invocations
+- [ ] Add `agent-index pack-check` subcommand: runs pack for a task and prints a human summary (file count, snippet count, score_debug top-5) — eliminates the need to pipe pack output through `python3 -c "import json,sys; ..."`
+- [ ] Add `just test-verbose` recipe that runs tests with `-v` and captures failures to a temp file for review — workers in sandboxed worktrees can't run bash, so orchestrator needs a quick test-result diffing workflow
+- [ ] Add `agent-telemetry inspect` subcommand: prints DB path, checkpoint state, and row counts per table — eliminates ad-hoc `python3 -c "import sqlite3; ..."` DB introspection during debugging
+- [ ] Add `just check-output cmd args` or a lightweight output-validator wrapper that runs a command and validates its JSON output has expected keys — replaces inline `python3 -c` key-checking one-liners in CI and test setup
