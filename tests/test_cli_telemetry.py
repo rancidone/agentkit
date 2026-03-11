@@ -185,5 +185,149 @@ class TestAgentTelemetryReport(unittest.TestCase):
         self.assertIn("repo", data)
 
 
+class TestAgentTelemetryTrend(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.repo = make_tmp_repo(self.tmp / "repo")
+        self.fixtures = make_tmp_telemetry_env(self.tmp, self.repo)
+        self.env = {
+            **os.environ,
+            "AGENTKIT_STATE_DIR": self.fixtures["state_dir"],
+        }
+        # Ingest first so the DB exists
+        subprocess.run(
+            [
+                sys.executable, AGENT_TELEMETRY, "ingest",
+                "--repo", str(self.repo),
+                "--claude-home", self.fixtures["claude_home"],
+                "--codex-home", self.fixtures["codex_home"],
+                "--events", self.fixtures["events_file"],
+            ],
+            capture_output=True,
+            env=self.env,
+            check=True,
+        )
+
+    def test_trend_exits_zero(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_trend_output_is_valid_json(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        data = json.loads(result.stdout)
+        self.assertIsInstance(data, dict)
+
+    def test_trend_output_has_days_key(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        data = json.loads(result.stdout)
+        self.assertIn("days", data)
+        self.assertIsInstance(data["days"], list)
+
+    def test_trend_with_window_days(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo), "--window-days", "30"],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_trend_with_since_flag(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo), "--since", "2026-01-01"],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data.get("since"), "2026-01-01")
+
+    def test_trend_invalid_since(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "trend", "--repo", str(self.repo), "--since", "not-a-date"],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+
+class TestReportVelocitySummary(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.repo = make_tmp_repo(self.tmp / "repo")
+        self.fixtures = make_tmp_telemetry_env(self.tmp, self.repo)
+        self.env = {
+            **os.environ,
+            "AGENTKIT_STATE_DIR": self.fixtures["state_dir"],
+        }
+        subprocess.run(
+            [
+                sys.executable, AGENT_TELEMETRY, "ingest",
+                "--repo", str(self.repo),
+                "--claude-home", self.fixtures["claude_home"],
+                "--codex-home", self.fixtures["codex_home"],
+                "--events", self.fixtures["events_file"],
+            ],
+            capture_output=True,
+            env=self.env,
+            check=True,
+        )
+
+    def test_report_has_velocity_summary(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "report", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        data = json.loads(result.stdout)
+        self.assertIn("velocity_summary", data)
+
+    def test_velocity_summary_has_expected_keys(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "report", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        data = json.loads(result.stdout)
+        vs = data["velocity_summary"]
+        self.assertIn("tasks_in_window", vs)
+        self.assertIn("total_tokens", vs)
+        self.assertIn("trend_direction", vs)
+
+    def test_report_since_flag(self):
+        result = subprocess.run(
+            [
+                sys.executable, AGENT_TELEMETRY, "report",
+                "--repo", str(self.repo),
+                "--since", "2026-01-01",
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data.get("since"), "2026-01-01")
+
+
 if __name__ == "__main__":
     unittest.main()

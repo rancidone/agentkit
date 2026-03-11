@@ -71,8 +71,8 @@ Add JSON schema validation for `agentkit.json` and a trust gate for Python adapt
 
 Surface the `v_trends` view that already exists in the telemetry DB but is never displayed.
 
-- [ ] Add `trend` subcommand to `agent-telemetry` rendering `v_trends` as a day table (day, tasks, tokens_total, avg_duration_s, loc_changed); default 30-day window
-- [ ] Add `--since YYYY-MM-DD` flag to `agent-telemetry report`, `hotspots`, and `trend` as alternative to `--window-days`
-- [ ] Add `just telemetry-trend` recipe following existing wrapper pattern in justfile
-- [ ] Extend `agent-telemetry report` with one-line velocity summary (tasks in window, total tokens, mean duration, trend direction)
-- [ ] Write unit tests for `trend` subcommand output format and `--since` date parsing against a synthetic DB
+- [x] Add `trend` subcommand to `agent-telemetry` rendering `v_trends` as a day table (day, tasks, tokens_total, avg_duration_s, loc_changed); default 30-day window
+- [x] Add `--since YYYY-MM-DD` flag to `agent-telemetry report`, `hotspots`, and `trend` as alternative to `--window-days`
+- [x] Add `just telemetry-trend` recipe following existing wrapper pattern in justfile
+- [x] Extend `agent-telemetry report` with one-line velocity summary (tasks in window, total tokens, mean duration, trend direction)
+- [x] Write unit tests for `trend` subcommand output format and `--since` date parsing against a synthetic DB

@@ -24,6 +24,9 @@ telemetry-report repo='.' window_days='7':
 telemetry-hotspots repo='.' window_days='7' limit='12':
   ./agent-telemetry-hotspots "{{repo}}" "{{window_days}}" "{{limit}}"
 
+telemetry-trend repo='.' window_days='30':
+  ./agent-telemetry-trend "{{repo}}" "{{window_days}}"
+
 context-pack task out token_budget='2800' limit='12' repo='.':
   ./agent-index pack --repo "{{repo}}" --task "{{task}}" --token-budget "{{token_budget}}" --limit "{{limit}}" --out "{{out}}"
 

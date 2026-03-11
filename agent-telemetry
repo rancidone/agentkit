@@ -1486,7 +1486,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 def cmd_report(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
     conn = _open_db(db_path(repo), "read")
-    cutoff = time.time() - (args.window_days * 86400)
+    cutoff = _cutoff_from_args(args)
 
     completed = conn.execute(
         """
@@ -1537,11 +1537,18 @@ def cmd_report(args: argparse.Namespace) -> int:
         (repo, cutoff),
     ).fetchall()
 
+    mean_dur = None
+    if trends["points"]:
+        durs = [p["avg_duration_seconds"] for p in trends["points"] if p["avg_duration_seconds"] > 0]
+        mean_dur = round(sum(durs) / len(durs), 2) if durs else None
+    trend_dir = trends["slopes"].get("direction_tokens_per_task", "flat")
+
     print(
         json.dumps(
             {
                 "repo": repo,
                 "window_days": args.window_days,
+                "since": getattr(args, "since", None),
                 "completed_tasks": int(completed),
                 "tokens": {
                     "total": grand,
@@ -1553,6 +1560,12 @@ def cmd_report(args: argparse.Namespace) -> int:
                 "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
                 "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
                 "trend": trends["slopes"],
+                "velocity_summary": {
+                    "tasks_in_window": int(completed),
+                    "total_tokens": grand,
+                    "mean_duration_seconds": mean_dur,
+                    "trend_direction": trend_dir,
+                },
                 "recent_task_samples": [
                     {
                         "task_id": r[0],
@@ -1661,10 +1674,70 @@ def cmd_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cutoff_from_args(args: argparse.Namespace) -> float:
+    """Return epoch-seconds cutoff from --since or --window-days (whichever is set)."""
+    since = getattr(args, "since", None)
+    if since:
+        import datetime as _dt
+        try:
+            d = _dt.date.fromisoformat(since)
+            return _dt.datetime(d.year, d.month, d.day, tzinfo=_dt.timezone.utc).timestamp()
+        except ValueError:
+            raise SystemExit(f"--since: invalid date format '{since}', expected YYYY-MM-DD")
+    return time.time() - (args.window_days * 86400)
+
+
+def cmd_trend(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    cutoff = _cutoff_from_args(args)
+
+    rows = conn.execute(
+        """
+        SELECT
+          date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
+          COUNT(*) AS tasks,
+          COALESCE(SUM(tokens_total), 0) AS tokens_total,
+          COALESCE(AVG(duration_seconds), 0) AS avg_duration_s,
+          COALESCE(SUM(insertions + deletions), 0) AS loc_changed
+        FROM v_task_kpi
+        WHERE repo = ? AND COALESCE(ended_at, started_at) >= ?
+        GROUP BY day
+        ORDER BY day ASC
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    days = [
+        {
+            "day": r[0],
+            "tasks": int(r[1]),
+            "tokens_total": int(r[2]),
+            "avg_duration_s": round(float(r[3] or 0.0), 2),
+            "loc_changed": int(r[4]),
+        }
+        for r in rows
+    ]
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": getattr(args, "window_days", 30),
+                "since": getattr(args, "since", None),
+                "days": days,
+                "total_tasks": sum(d["tasks"] for d in days),
+                "total_tokens": sum(d["tokens_total"] for d in days),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def cmd_hotspots(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
     conn = _open_db(db_path(repo), "read")
-    cutoff = time.time() - (args.window_days * 86400)
+    cutoff = _cutoff_from_args(args)
 
     rows = conn.execute(
         """
@@ -1892,6 +1965,7 @@ def parser() -> argparse.ArgumentParser:
     p_report = sp.add_parser("report")
     p_report.add_argument("--repo", default=".")
     p_report.add_argument("--window-days", type=int, default=7)
+    p_report.add_argument("--since", default=None, metavar="YYYY-MM-DD")
     p_report.set_defaults(func=cmd_report)
 
     p_task = sp.add_parser("task")
@@ -1902,9 +1976,16 @@ def parser() -> argparse.ArgumentParser:
     p_hot = sp.add_parser("hotspots")
     p_hot.add_argument("--repo", default=".")
     p_hot.add_argument("--window-days", type=int, default=7)
+    p_hot.add_argument("--since", default=None, metavar="YYYY-MM-DD")
     p_hot.add_argument("--limit", type=int, default=12)
     p_hot.add_argument("--warn-avg-tokens", type=int, default=25000)
     p_hot.set_defaults(func=cmd_hotspots)
+
+    p_trend = sp.add_parser("trend", help="Show day-by-day telemetry trends from v_trends view.")
+    p_trend.add_argument("--repo", default=".")
+    p_trend.add_argument("--window-days", type=int, default=30)
+    p_trend.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    p_trend.set_defaults(func=cmd_trend)
 
     p_exp = sp.add_parser("export-jsonl")
     p_exp.add_argument("--repo", default=".")
