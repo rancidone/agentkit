@@ -1,18 +1,18 @@
 # TODO Plan: Tasks-First Claude Command Orchestration
 
 ## Plan
-- [ ] Update `/start-todo` in [`claude/commands/start-todo.md`](/home/maddie/repos/agentkit/claude/commands/start-todo.md) to make tasks-first the default flow.
-- [ ] Keep `--max-parallel N`, but document it as task concurrency planning, not default worker spawning.
-- [ ] Add conservative worker auto-switch heuristic.
-- [ ] Require `>=2` independent tasks.
-- [ ] Require each selected task to be medium/high complexity.
-- [ ] Otherwise remain in tasks-first mode.
-- [ ] Split `/start-todo` flow into explicit branches.
-- [ ] Tasks-first branch: `task-started` -> `/next` -> `task-completed` or `task-failed`.
-- [ ] Worker branch: `worker-spawned` -> merge gate -> `worker-merged` -> `task-completed`/`task-failed`.
-- [ ] Define lifecycle logging policy.
-- [ ] Tasks-first path logs only `task_started`, `task_completed`, `task_failed`.
-- [ ] No synthetic worker events when workers are not used.
+- [x] Update `/start-todo` in [`claude/commands/start-todo.md`](/home/maddie/repos/agentkit/claude/commands/start-todo.md) to make tasks-first the default flow.
+- [x] Keep `--max-parallel N`, but document it as task concurrency planning, not default worker spawning.
+- [x] Add conservative worker auto-switch heuristic.
+- [x] Require `>=2` independent tasks.
+- [x] Require each selected task to be medium/high complexity.
+- [x] Otherwise remain in tasks-first mode.
+- [x] Split `/start-todo` flow into explicit branches.
+- [x] Tasks-first branch: `task-started` -> `/next` -> `task-completed` or `task-failed`.
+- [x] Worker branch: `worker-spawned` -> merge gate -> `worker-merged` -> `task-completed`/`task-failed`.
+- [x] Define lifecycle logging policy.
+- [x] Tasks-first path logs only `task_started`, `task_completed`, `task_failed`.
+- [x] No synthetic worker events when workers are not used.
 - [ ] Align skill docs in [`skills/agentkit-todo-codex/SKILL.md`](/home/maddie/repos/agentkit/skills/agentkit-todo-codex/SKILL.md) with the same default, heuristic, and branching behavior.
 - [ ] Update [`README.md`](/home/maddie/repos/agentkit/README.md) to state tasks-first default and worker flow as conditional escalation only.
 - [ ] Validate command docs with `agent-validate-command-docs .`.
