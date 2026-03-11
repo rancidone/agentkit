@@ -158,6 +158,8 @@ To use them in Claude Code, copy or symlink the files into your local `~/.claude
 
 An installable Codex skill is included at `skills/agentkit-todo-codex`.
 It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and uses strict `agent-*` wrappers (no shell composition).
+The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
+In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 
 Install agentkit tools and the skill globally:
 
