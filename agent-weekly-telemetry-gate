@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <repo_path> [window_days] [claude_home] [events_file]" >&2
+  echo "Usage: $0 <repo_path> [window_days] [claude_home] [events_file] [codex_home]" >&2
   exit 1
 fi
 
@@ -11,14 +11,43 @@ REPO_ROOT="$(cd "$1" && pwd)"
 WINDOW_DAYS="${2:-7}"
 CLAUDE_HOME="${3:-$HOME/.claude}"
 EVENTS_FILE="${4:-${REPO_ROOT}/.claude/agent-events.jsonl}"
+CODEX_HOME="${5:-$HOME/.codex}"
 STRICT_JSON="${REPO_ROOT}/.claude/telemetry-strict.json"
 WEEKLY_MD="${REPO_ROOT}/.claude/telemetry-weekly.md"
+HOME_STATE_DIR="${HOME}/.claude/tools/agentkit/state"
+XDG_STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/agentkit"
+
+can_write_dir() {
+  local dir="$1"
+  local probe=""
+  mkdir -p "${dir}" 2>/dev/null || return 1
+  probe="${dir}/.agentkit-write-probe-$$"
+  : > "${probe}" 2>/dev/null || return 1
+  rm -f "${probe}"
+  return 0
+}
+
+if [[ -n "${AGENTKIT_STATE_DIR:-}" ]]; then
+  STATE_DIR="${AGENTKIT_STATE_DIR}"
+else
+  if can_write_dir "${XDG_STATE_DIR}"; then
+    STATE_DIR="${XDG_STATE_DIR}"
+  elif can_write_dir "${HOME_STATE_DIR}"; then
+    STATE_DIR="${HOME_STATE_DIR}"
+  else
+    echo "error: no writable telemetry state dir found" >&2
+    echo "tried: ${XDG_STATE_DIR} and ${HOME_STATE_DIR}" >&2
+    echo "set AGENTKIT_STATE_DIR to a persistent writable directory" >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "${REPO_ROOT}/.claude"
 
 echo "[agent-weekly-telemetry-gate] running strict checker..."
 STRICT_EXIT=0
-"${AGENTKIT_BIN}/agent-telemetry-strict" \
+AGENTKIT_STATE_DIR="${STATE_DIR}" \
+  "${AGENTKIT_BIN}/agent-telemetry-strict" \
   --repo "${REPO_ROOT}" \
   --claude-home "${CLAUDE_HOME}" \
   --events "${EVENTS_FILE}" \
@@ -28,13 +57,16 @@ STRICT_EXIT=0
   --enforce || STRICT_EXIT=$?
 
 echo "[agent-weekly-telemetry-gate] running telemetry ingest..."
-"${AGENTKIT_BIN}/agent-telemetry" ingest \
+AGENTKIT_STATE_DIR="${STATE_DIR}" \
+  "${AGENTKIT_BIN}/agent-telemetry" ingest \
   --repo "${REPO_ROOT}" \
   --claude-home "${CLAUDE_HOME}" \
+  --codex-home "${CODEX_HOME}" \
   --events "${EVENTS_FILE}"
 
 echo "[agent-weekly-telemetry-gate] regenerating weekly summary..."
-"${AGENTKIT_BIN}/agent-telemetry" weekly-summary \
+AGENTKIT_STATE_DIR="${STATE_DIR}" \
+  "${AGENTKIT_BIN}/agent-telemetry" weekly-summary \
   --repo "${REPO_ROOT}" \
   --window-days "${WINDOW_DAYS}" \
   --out "${WEEKLY_MD}"

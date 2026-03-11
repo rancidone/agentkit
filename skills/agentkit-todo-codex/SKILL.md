@@ -90,6 +90,8 @@ No worker lifecycle events in this branch.
 
 Worker branch (conditional escalation):
 
+**Compact context before spawning workers** to avoid context bleed and redundant re-reads in sub-agents.
+
 1. Log worker start:
 
 ```bash

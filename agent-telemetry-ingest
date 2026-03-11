@@ -2,7 +2,41 @@
 set -euo pipefail
 
 REPO="${1:-.}"
+REPO_ROOT="$(cd "${REPO}" && pwd)"
 CLAUDE_HOME="${2:-$HOME/.claude}"
 EVENTS="${3:-.claude/agent-events.jsonl}"
+CODEX_HOME="${4:-$HOME/.codex}"
+HOME_STATE_DIR="${HOME}/.claude/tools/agentkit/state"
+XDG_STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/agentkit"
 
-"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" ingest --repo "$REPO" --claude-home "$CLAUDE_HOME" --events "$EVENTS"
+can_write_dir() {
+  local dir="$1"
+  local probe=""
+  mkdir -p "${dir}" 2>/dev/null || return 1
+  probe="${dir}/.agentkit-write-probe-$$"
+  : > "${probe}" 2>/dev/null || return 1
+  rm -f "${probe}"
+  return 0
+}
+
+if [[ -n "${AGENTKIT_STATE_DIR:-}" ]]; then
+  STATE_DIR="${AGENTKIT_STATE_DIR}"
+else
+  if can_write_dir "${XDG_STATE_DIR}"; then
+    STATE_DIR="${XDG_STATE_DIR}"
+  elif can_write_dir "${HOME_STATE_DIR}"; then
+    STATE_DIR="${HOME_STATE_DIR}"
+  else
+    echo "error: no writable telemetry state dir found" >&2
+    echo "tried: ${XDG_STATE_DIR} and ${HOME_STATE_DIR}" >&2
+    echo "set AGENTKIT_STATE_DIR to a persistent writable directory" >&2
+    exit 1
+  fi
+fi
+
+AGENTKIT_STATE_DIR="${STATE_DIR}" \
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" ingest \
+  --repo "$REPO_ROOT" \
+  --claude-home "$CLAUDE_HOME" \
+  --codex-home "$CODEX_HOME" \
+  --events "$EVENTS"

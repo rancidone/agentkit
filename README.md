@@ -5,7 +5,7 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ## Includes
 
 - `agent-index`: lightweight repository indexing and task-scoped context pack generation.
-- `agent-telemetry`: local telemetry ingestion/reporting from Claude JSONL logs.
+- `agent-telemetry`: local telemetry ingestion/reporting from Claude + Codex JSONL logs.
 
 ## Goals
 
@@ -25,11 +25,20 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ./agent-index pack --repo . --task "implement SSE endpoint" --out /tmp/pack.json
 
 ./agent-index-refresh-light .
-./agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl
+./agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl "$HOME/.codex"
 ./agent-telemetry-report . 7
 ./agent-telemetry-hotspots . 7 12
+./agent-telemetry rebuild --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl
+./agent-telemetry export --repo . --dataset task_kpi --format csv --out .claude/task-kpi.csv
 ./agent-telemetry-strict --repo . --window-days 7 --enforce
 ```
+
+## Telemetry Ingest Model
+
+- `agent-telemetry ingest` is incremental and non-destructive.
+- Checkpoints are tracked per source log so reruns only process new records.
+- Writes are serialized by a per-repo writer lease, allowing concurrent Codex/Claude callers without DB lock races.
+- `agent-telemetry rebuild` is the maintenance path for full reset + recompute.
 
 ## Task Event Logging (KPI Wiring)
 
@@ -41,10 +50,17 @@ Required fields:
 - `task_id`
 - `session_branch`
 
+Optional fields:
+- `task_text` (persisted to telemetry DB)
+- `complexity_points` (`1..5`)
+- `task_outcome` (for custom outcomes on non-standard flows)
+- `commit_sha`, `files_changed`, `insertions`, `deletions` (build artifact linking)
+
 Examples:
 
 ```bash
 ./agent-log-task-started . phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
+./agent-log-task-started . phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring" .claude/agent-events.jsonl 3
 ./agent-log-task-complete . phase4-fw todo/20260308-130742
 ```
 
@@ -52,11 +68,12 @@ Agentkit wrappers:
 
 ```bash
 just task-started phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
+just task-started phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring" . .claude/agent-events.jsonl 3
 just task-completed phase4-fw todo/20260308-130742
 just telemetry-ingest
 just telemetry-report
 just telemetry-hotspots
-./agent-weekly-telemetry-gate /path/to/repo 7 "$HOME/.claude" "/path/to/repo/.claude/agent-events.jsonl"
+./agent-weekly-telemetry-gate /path/to/repo 7 "$HOME/.claude" "/path/to/repo/.claude/agent-events.jsonl" "$HOME/.codex"
 ```
 
 

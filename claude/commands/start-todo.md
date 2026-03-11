@@ -16,10 +16,10 @@ ARGS: optional `--max-parallel N` (default `2`, max `3`).
 
 ## Setup
 
-1. Validate command docs and guardrails:
+1. Run setup (validate docs, full index refresh, telemetry ingest):
 
 ```bash
-just validate-command-docs
+just setup
 ```
 
 2. Reject unsafe ad-hoc command shapes before running custom commands:
@@ -28,19 +28,7 @@ just validate-command-docs
 just command-guard "<candidate-command>"
 ```
 
-3. Refresh full index baseline:
-
-```bash
-just index-refresh-full
-```
-
-4. Ingest telemetry baseline:
-
-```bash
-just telemetry-ingest
-```
-
-5. Create or reuse the session branch:
+3. Create or reuse the session branch:
 
 ```bash
 just session-branch todo
@@ -98,6 +86,8 @@ just task-failed "<task_id>" "<SESSION_BRANCH>" failed
 
 Only enter this branch when the worker-switch heuristic passes.
 
+**Compact context before spawning workers** to avoid context bleed and redundant re-reads in sub-agents.
+
 As each worker finishes:
 
 1. Verify merge target is not `main` or `develop`.
@@ -142,11 +132,7 @@ Use lifecycle commands for implementation and validation flow:
 ## Finish
 
 ```bash
-just telemetry-report
-```
-
-```bash
-just telemetry-hotspots
+just observe
 ```
 
 Never merge into `main` or `develop` from this command.

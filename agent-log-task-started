@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 4 ]]; then
-  echo "Usage: $0 <repo_path> <task_id> <session_branch> <task_text> [events_file]" >&2
+  echo "Usage: $0 <repo_path> <task_id> <session_branch> <task_text> [events_file] [complexity_points]" >&2
   exit 1
 fi
 
@@ -10,13 +10,39 @@ REPO_PATH="$(cd "$1" && pwd)"
 TASK_ID="$2"
 SESSION_BRANCH="$3"
 TASK_TEXT="$4"
-EVENTS_FILE="${5:-${REPO_PATH}/.claude/agent-events.jsonl}"
+EVENTS_FILE="${REPO_PATH}/.claude/agent-events.jsonl"
+COMPLEXITY_POINTS=""
+
+if [[ $# -ge 5 ]]; then
+  if [[ "$5" =~ ^[1-5]$ ]]; then
+    COMPLEXITY_POINTS="$5"
+  else
+    EVENTS_FILE="$5"
+  fi
+fi
+
+if [[ $# -ge 6 ]]; then
+  COMPLEXITY_POINTS="$6"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-"${SCRIPT_DIR}/agent-log" \
-  --events "${EVENTS_FILE}" \
-  --event-type task_started \
-  --field "repo=${REPO_PATH}" \
-  --field "task_id=${TASK_ID}" \
-  --field "session_branch=${SESSION_BRANCH}" \
+CMD=(
+  "${SCRIPT_DIR}/agent-log"
+  --events "${EVENTS_FILE}"
+  --event-type task_started
+  --field "repo=${REPO_PATH}"
+  --field "task_id=${TASK_ID}"
+  --field "session_branch=${SESSION_BRANCH}"
   --field "task_text=${TASK_TEXT}"
+)
+
+if [[ -n "${COMPLEXITY_POINTS}" ]]; then
+  if [[ ! "${COMPLEXITY_POINTS}" =~ ^[1-5]$ ]]; then
+    echo "error: complexity_points must be an integer 1-5" >&2
+    exit 1
+  fi
+  CMD+=(--field "complexity_points=${COMPLEXITY_POINTS}")
+fi
+
+"${CMD[@]}"
