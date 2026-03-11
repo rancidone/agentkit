@@ -53,9 +53,14 @@ Record this output as `SESSION_BRANCH`.
 - Read unchecked `[ ]` items in `TODO.md`.
 - Respect phase order.
 - Select only independent tasks.
-- Keep up to `N` active workers while eligible tasks remain.
+- Default mode is **tasks-first**. Do not spawn workers unless the worker-switch heuristic is satisfied.
+- Keep `--max-parallel N` as a planning limit for independent tasks, not a default worker count.
+- Worker-switch heuristic:
+  - Require at least `2` independent tasks selected from the current phase.
+  - Require each selected task to be medium or high complexity.
+  - Otherwise stay in tasks-first mode.
 
-## Per-Task Dispatch
+## Tasks-First Branch (Default)
 
 For each selected task, run:
 
@@ -71,13 +76,27 @@ just context-pack "<exact task text>" "/tmp/agentpack-<id>.json"
 just task-started "<task_id>" "<SESSION_BRANCH>" "<exact task text>"
 ```
 
-3. Spawn worker in worktree isolation and log worker start:
+3. Execute directly in-session with lifecycle commands:
 
 ```bash
-just worker-spawned "<task_id>" "<SESSION_BRANCH>"
+/next "<exact task text>"
 ```
 
-## Merge Gate
+4. If complete, mark TODO item `[x]` and log completion:
+
+```bash
+just task-completed "<task_id>" "<SESSION_BRANCH>"
+```
+
+5. If failed, record:
+
+```bash
+just task-failed "<task_id>" "<SESSION_BRANCH>" failed
+```
+
+## Worker Branch (Conditional Escalation)
+
+Only enter this branch when the worker-switch heuristic passes.
 
 As each worker finishes:
 
@@ -85,7 +104,7 @@ As each worker finishes:
 2. Run changed-scope checks and policy checks.
 3. Merge worker branch into `SESSION_BRANCH`.
 4. Mark TODO item `[x]`.
-5. Log completion:
+5. Log worker and task completion:
 
 ```bash
 just worker-merged "<task_id>" "<SESSION_BRANCH>" merged
