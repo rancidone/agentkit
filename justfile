@@ -61,6 +61,9 @@ observe repo='.' window_days='7':
   ./agent-telemetry-report "{{repo}}" "{{window_days}}"
   ./agent-telemetry-hotspots "{{repo}}" "{{window_days}}" "12"
 
+test:
+  python3 -m unittest discover -s tests/ -p "test_*.py" -v
+
 # Composite: validate docs + full index refresh + telemetry ingest (session setup)
 setup:
   ./agent-validate-command-docs .
