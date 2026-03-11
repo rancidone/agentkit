@@ -54,7 +54,12 @@ Task selection and dispatch:
 1. Read unchecked `[ ]` items in `TODO.md`.
 2. Respect phase order.
 3. Select only independent tasks.
-4. Keep up to `N` active workers.
+4. Default to tasks-first mode.
+5. Keep `--max-parallel N` as task concurrency planning, not default worker spawning.
+6. Switch to worker mode only when all are true:
+   - At least `2` independent tasks are selected.
+   - Each selected task is medium/high complexity.
+   - Otherwise remain in tasks-first mode.
 
 Per selected task:
 
@@ -66,16 +71,35 @@ agent-index pack --repo . --task "<exact task text>" --token-budget 2800 --limit
 agent-log-task-started . "<task_id>" "<SESSION_BRANCH>" "<exact task text>"
 ```
 
+Tasks-first branch (default):
+
+1. Execute task via `/next "<exact task text>"`.
+2. If successful, mark TODO item `[x]` and log:
+
+```bash
+agent-log-task-complete . "<task_id>" "<SESSION_BRANCH>"
+```
+
+3. If failed, log:
+
+```bash
+agent-log-task-failed . "<task_id>" "<SESSION_BRANCH>" failed
+```
+
+No worker lifecycle events in this branch.
+
+Worker branch (conditional escalation):
+
+1. Log worker start:
+
 ```bash
 agent-log-worker-spawned . "<task_id>" "<SESSION_BRANCH>"
 ```
 
-Merge gate as workers finish:
-
-1. Verify merge target is not `main` or `develop`.
-2. Run changed-scope checks and policy checks.
-3. Merge worker branch into `SESSION_BRANCH`.
-4. Mark TODO item `[x]`.
+2. Verify merge target is not `main` or `develop`.
+3. Run changed-scope checks and policy checks.
+4. Merge worker branch into `SESSION_BRANCH`.
+5. Mark TODO item `[x]`.
 
 Then log:
 
