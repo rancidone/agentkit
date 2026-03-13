@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from agentkit_mcp import REPO_SERVICE, TELEMETRY_SERVICE, service_definitions
+from agent_index_backend import db_path as index_db_path
+from agent_telemetry_backend import db_path as telemetry_db_path
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 AGENTKIT_REPO_MCP = str(REPO_ROOT / "agentkit-repo-mcp")
@@ -34,6 +37,13 @@ class TestServiceDefinitions(unittest.TestCase):
         self.assertIn("task.log_completed", TELEMETRY_SERVICE.owned_capabilities)
         self.assertEqual(TELEMETRY_SERVICE.backend_module, "agent_telemetry_backend")
         self.assertNotIn("index.query", TELEMETRY_SERVICE.owned_capabilities)
+
+    def test_shared_backends_keep_existing_sqlite_db_names(self):
+        repo = str(REPO_ROOT)
+        self.assertTrue(os.path.basename(index_db_path(repo)).startswith("index-"))
+        self.assertTrue(os.path.basename(index_db_path(repo)).endswith(".db"))
+        self.assertTrue(os.path.basename(telemetry_db_path(repo)).startswith("telemetry-"))
+        self.assertTrue(os.path.basename(telemetry_db_path(repo)).endswith(".db"))
 
 
 class TestServiceEntrypoints(unittest.TestCase):

@@ -1,13 +1,18 @@
 """Unit tests for agentkit_common helper functions."""
+import json
+import os
 import sys
 import pathlib
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from agentkit_common import (
+    default_state_dir,
     detect_runner,
     infer_role,
+    load_repo_config,
     parse_isoish_timestamp,
     repo_id,
     should_skip,
@@ -196,6 +201,36 @@ class TestDetectRunner(unittest.TestCase):
 
     def test_defaults_to_all(self):
         self.assertEqual(detect_runner({}), "all")
+
+
+class TestStateAndConfigDefaults(unittest.TestCase):
+    def test_default_state_dir_honors_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("AGENTKIT_STATE_DIR")
+            os.environ["AGENTKIT_STATE_DIR"] = tmp
+            try:
+                self.assertEqual(default_state_dir(), tmp)
+            finally:
+                if old is None:
+                    os.environ.pop("AGENTKIT_STATE_DIR", None)
+                else:
+                    os.environ["AGENTKIT_STATE_DIR"] = old
+
+    def test_load_repo_config_prefers_dot_claude_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp)
+            (repo / ".claude").mkdir()
+            (repo / "agentkit.json").write_text(json.dumps({"context": {"default_token_budget": 123}}))
+            (repo / ".claude" / "agentkit.json").write_text(json.dumps({"context": {"default_token_budget": 456}}))
+            cfg = load_repo_config(str(repo))
+            self.assertEqual(cfg["context"]["default_token_budget"], 456)
+
+    def test_load_repo_config_falls_back_to_repo_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp)
+            (repo / "agentkit.json").write_text(json.dumps({"context": {"default_token_budget": 123}}))
+            cfg = load_repo_config(str(repo))
+            self.assertEqual(cfg["context"]["default_token_budget"], 123)
 
 
 class TestAdapterTrustGate(unittest.TestCase):
