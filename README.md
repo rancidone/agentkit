@@ -34,6 +34,7 @@ Bootstrap entrypoints are available now:
 ```
 
 At this stage they publish the service contract only. The current `agent-*` wrappers remain the supported dogfooding path for this repository until the MCP-backed skills reach workflow parity.
+The shared backend logic now lives in importable modules, with `agent-index` delegating to `agent_index_backend` and `agent-telemetry` delegating to `agent_telemetry_backend`.
 
 ## Requirements
 

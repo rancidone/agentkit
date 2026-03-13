@@ -12,6 +12,7 @@ class ServiceDefinition:
     name: str
     purpose: str
     compatibility_path_required: bool
+    backend_module: str
     owned_capabilities: tuple[str, ...]
     deferred_capabilities: tuple[str, ...]
 
@@ -20,6 +21,7 @@ REPO_SERVICE = ServiceDefinition(
     name="agentkit-repo-mcp",
     purpose="Owns repo, index, context, and repo-config operations.",
     compatibility_path_required=True,
+    backend_module="agent_index_backend",
     owned_capabilities=(
         "index.build",
         "index.refresh",
@@ -35,6 +37,7 @@ TELEMETRY_SERVICE = ServiceDefinition(
     name="agentkit-telemetry-mcp",
     purpose="Owns telemetry ingestion, state management, and task lifecycle operations.",
     compatibility_path_required=True,
+    backend_module="agent_telemetry_backend",
     owned_capabilities=(
         "telemetry.ingest",
         "telemetry.report",

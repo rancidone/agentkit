@@ -1,0 +1,537 @@
+#!/usr/bin/env python3
+"""Build/query lightweight repo metadata for task-scoped context packs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import time
+from collections import Counter
+from typing import Any
+
+from agent_extractors import extract_symbols, load_adapters, snippet_preview
+from agentkit_common import (
+    DEFAULT_EXCLUDES,
+    default_state_dir,
+    infer_role,
+    iter_repo_files,
+    load_repo_config,
+    repo_id,
+    repo_root,
+)
+
+
+def db_path(repo: str) -> str:
+    return os.path.join(default_state_dir(), f"index-{repo_id(repo)}.db")
+
+
+def open_db(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS files (
+          repo TEXT NOT NULL,
+          path TEXT NOT NULL,
+          role TEXT NOT NULL,
+          ext TEXT NOT NULL,
+          is_test INTEGER NOT NULL,
+          size INTEGER NOT NULL,
+          mtime REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY (repo, path)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tasks (
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          phase TEXT NOT NULL,
+          text TEXT NOT NULL,
+          line_no INTEGER NOT NULL,
+          is_done INTEGER NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY (repo, task_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS symbols (
+          repo TEXT NOT NULL,
+          path TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          extractor TEXT NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY (repo, path, symbol, start_line, end_line)
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def parse_tasks_from_todo(repo: str) -> list[dict[str, Any]]:
+    todo_path = os.path.join(repo, "TODO.md")
+    if not os.path.exists(todo_path):
+        return []
+    tasks: list[dict[str, Any]] = []
+    phase = "unphased"
+    with open(todo_path, "r", encoding="utf-8") as fh:
+        for idx, raw in enumerate(fh, 1):
+            line = raw.rstrip("\n")
+            if line.startswith("## "):
+                phase = line[3:].strip().lower().replace(" ", "-")
+                continue
+            if "- [ ] " in line or "- [x] " in line:
+                is_done = 1 if "- [x] " in line else 0
+                text = line.split("] ", 1)[1].strip()
+                task_id = f"{phase}-L{idx}"
+                tasks.append(
+                    {
+                        "task_id": task_id,
+                        "phase": phase,
+                        "text": text,
+                        "line_no": idx,
+                        "is_done": is_done,
+                    }
+                )
+    return tasks
+
+
+def build_index(repo: str, mode: str, allow_custom_adapters: bool = False) -> dict[str, Any]:
+    cfg = load_repo_config(repo)
+    excludes = set(DEFAULT_EXCLUDES)
+    excludes.update(set(cfg.get("index", {}).get("exclude_paths", [])))
+    max_file_bytes = int(cfg.get("index", {}).get("max_file_bytes", 200000))
+    extract_cfg = cfg.get("extract", {})
+    extract_enabled = bool(extract_cfg.get("enabled", True))
+    extract_max_file_bytes = int(extract_cfg.get("max_file_bytes", max_file_bytes))
+    language_layers: dict[str, str] = extract_cfg.get("languages", {})
+    adapters = load_adapters(repo, cfg, allow_custom=allow_custom_adapters)
+
+    conn = open_db(db_path(repo))
+    now = time.time()
+
+    if mode == "full":
+        conn.execute("DELETE FROM files WHERE repo = ?", (repo,))
+        conn.execute("DELETE FROM tasks WHERE repo = ?", (repo,))
+        conn.execute("DELETE FROM symbols WHERE repo = ?", (repo,))
+
+    files = iter_repo_files(repo, excludes)
+    rows = []
+    symbol_rows: list[tuple[Any, ...]] = []
+    files_skipped_size = 0
+
+    for rel in files:
+        full = os.path.join(repo, rel)
+        stat = os.stat(full)
+        if stat.st_size > max_file_bytes:
+            files_skipped_size += 1
+            continue
+
+        role = infer_role(rel)
+        ext = os.path.splitext(rel)[1].lower().lstrip(".")
+        is_test = 1 if role == "test" else 0
+        rows.append((repo, rel, role, f".{ext}" if ext else "", is_test, stat.st_size, stat.st_mtime, now))
+
+        if extract_enabled and stat.st_size <= extract_max_file_bytes:
+            layer = language_layers.get(ext, "")
+            symbols = extract_symbols(
+                full,
+                f".{ext}" if ext else "",
+                layer,
+                rel_path=rel,
+                adapters=adapters,
+                cfg=cfg,
+            )
+            for sym in symbols:
+                symbol_rows.append(
+                    (
+                        repo,
+                        rel,
+                        sym["symbol"],
+                        sym.get("kind", "function"),
+                        int(sym["start_line"]),
+                        int(sym["end_line"]),
+                        sym.get("extractor", layer or "auto"),
+                        now,
+                    )
+                )
+
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO files(repo, path, role, ext, is_test, size, mtime, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+    if symbol_rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO symbols(repo, path, symbol, kind, start_line, end_line, extractor, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            symbol_rows,
+        )
+
+    tasks = parse_tasks_from_todo(repo)
+    task_rows = [
+        (repo, t["task_id"], t["phase"], t["text"], t["line_no"], t["is_done"], now)
+        for t in tasks
+    ]
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO tasks(repo, task_id, phase, text, line_no, is_done, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        task_rows,
+    )
+    conn.commit()
+
+    role_counts = Counter(r[2] for r in rows)
+    return {
+        "repo": repo,
+        "mode": mode,
+        "files_indexed": len(rows),
+        "files_skipped_size": files_skipped_size,
+        "tasks_indexed": len(task_rows),
+        "symbols_indexed": len(symbol_rows),
+        "role_counts": dict(role_counts),
+        "adapters_loaded": [a.name for a in adapters],
+    }
+
+
+def _tokenize(task_text: str, cfg: dict[str, Any] | None = None) -> list[str]:
+    normalized = (
+        task_text.lower()
+        .replace("`", " ")
+        .replace("/", " ")
+        .replace(",", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+    )
+    tokens = [t for t in normalized.split() if len(t) > 2]
+    tokens = list(dict.fromkeys(tokens))[:40]
+    built_in_synonyms: dict[str, list[str]] = {
+        "sse": ["events", "event", "routes_events", "live"],
+        "endpoint": ["route", "routes", "api", "http_server"],
+        "wire": ["store", "live", "events", "client"],
+        "ui": ["svelte", "view", "components", "src"],
+    }
+    repo_synonyms: dict[str, list[str]] = {}
+    if cfg:
+        repo_synonyms = cfg.get("context", {}).get("synonyms", {})
+    synonyms = {**built_in_synonyms, **repo_synonyms}
+    expanded = list(tokens)
+    for tok in tokens:
+        expanded.extend(synonyms.get(tok, []))
+    return list(dict.fromkeys(expanded))
+
+
+def _score_candidates(
+    repo: str,
+    task_text: str,
+    limit: int,
+    cfg: dict[str, Any] | None = None,
+) -> list[tuple[float, str, str, int, dict[str, float]]]:
+    """Score repo files by relevance to task_text.
+
+    Returns list of (score, path, role, is_test, debug) sorted by score desc.
+    debug dict contains path_score, content_score, symbol_score breakdowns.
+    """
+    conn = open_db(db_path(repo))
+    tokens = _tokenize(task_text, cfg)
+    cur = conn.execute("SELECT path, role, is_test FROM files WHERE repo = ?", (repo,))
+    lower_task = task_text.lower()
+
+    path_scored: list[tuple[float, str, str, int]] = []
+    for path, role, is_test in cur.fetchall():
+        p = path.lower()
+        path_score = 0.0
+        for tok in tokens:
+            if tok in p:
+                path_score += 5.0
+        if role == "api" and ("route" in lower_task or "endpoint" in lower_task):
+            path_score += 2.0
+        if role == "view" and ("ui" in lower_task or "svelte" in lower_task):
+            path_score += 2.0
+        if role == "test":
+            path_score += 0.5
+        path_scored.append((path_score, path, role, is_test))
+
+    path_scored.sort(key=lambda x: (-x[0], x[1]))
+
+    # Content-grep pass: read first 300 lines of top-30 candidates for token matches
+    content_bonuses: dict[str, float] = {}
+    for path_s, path, role, is_test in path_scored[:30]:
+        full = os.path.join(repo, path)
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                content_lines = [fh.readline() for _ in range(300)]
+            content_lower = "".join(content_lines).lower()
+            bonus = 0.0
+            for tok in tokens:
+                if tok in content_lower:
+                    bonus = min(bonus + 1.0, 4.0)
+            if bonus > 0:
+                content_bonuses[path] = bonus
+        except OSError:
+            pass
+
+    scored: list[tuple[float, str, str, int, dict[str, float]]] = []
+    for path_s, path, role, is_test in path_scored:
+        content_s = content_bonuses.get(path, 0.0)
+
+        sym_hit = conn.execute(
+            """
+            SELECT COUNT(*) FROM symbols
+            WHERE repo = ? AND path = ? AND (
+              LOWER(symbol) LIKE ? OR LOWER(symbol) LIKE ? OR LOWER(symbol) LIKE ?
+            )
+            """,
+            (repo, path, "%event%", "%sse%", "%live%"),
+        ).fetchone()[0]
+        symbol_s = min(3.0, sym_hit * 0.6) if sym_hit else 0.0
+
+        total = path_s + content_s + symbol_s
+        if total > 0:
+            debug = {"path_score": path_s, "content_score": content_s, "symbol_score": symbol_s}
+            scored.append((total, path, role, is_test, debug))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    if scored:
+        return scored[:limit]
+
+    fallback = conn.execute(
+        """
+        SELECT path, role, is_test
+        FROM files
+        WHERE repo = ? AND role IN ('api', 'view', 'model', 'test')
+        ORDER BY path ASC
+        LIMIT ?
+        """,
+        (repo, max(limit * 2, 30)),
+    ).fetchall()
+    out: list[tuple[float, str, str, int, dict[str, float]]] = []
+    for path, role, is_test in fallback:
+        base = 0.5 + (1.2 if role == "api" else 1.0 if role == "view" else 0.8 if role == "model" else 0.3)
+        out.append((base, path, role, is_test, {"path_score": base, "content_score": 0.0, "symbol_score": 0.0}))
+    return out[:limit]
+
+
+def _pick_snippets(repo: str, task_text: str, file_paths: list[str], cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    conn = open_db(db_path(repo))
+    context_cfg = cfg.get("context", {})
+    max_total = int(context_cfg.get("max_snippets_total", 20))
+    max_per_file = int(context_cfg.get("max_snippets_per_file", 3))
+    prefer_symbols = bool(context_cfg.get("prefer_symbol_blocks", True))
+    if not prefer_symbols:
+        return []
+
+    tokens = _tokenize(task_text, cfg)
+    snippets: list[dict[str, Any]] = []
+
+    for path in file_paths:
+        if len(snippets) >= max_total:
+            break
+
+        rows = conn.execute(
+            """
+            SELECT symbol, kind, start_line, end_line, extractor
+            FROM symbols
+            WHERE repo = ? AND path = ?
+            ORDER BY start_line ASC
+            """,
+            (repo, path),
+        ).fetchall()
+        if not rows:
+            continue
+
+        scored: list[tuple[float, tuple[Any, ...]]] = []
+        for r in rows:
+            symbol = (r[0] or "").lower()
+            score = 0.0
+            for tok in tokens:
+                if tok in symbol:
+                    score += 4.0
+            if score > 0:
+                scored.append((score, r))
+
+        if not scored:
+            # fallback: first few symbols in file
+            scored = [(0.2, r) for r in rows[:max_per_file]]
+
+        scored.sort(key=lambda x: (-x[0], x[1][2]))
+        for score, r in scored[:max_per_file]:
+            if len(snippets) >= max_total:
+                break
+            start_line = int(r[2])
+            end_line = int(r[3])
+            full_path = os.path.join(repo, path)
+            snippets.append(
+                {
+                    "path": path,
+                    "symbol": r[0],
+                    "kind": r[1],
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "extractor": r[4],
+                    "score": round(score, 2),
+                    "preview": snippet_preview(full_path, start_line, end_line, max_lines=40),
+                }
+            )
+
+    return snippets
+
+
+def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
+    cfg = load_repo_config(repo)
+    scored = _score_candidates(repo, task_text, limit, cfg)
+
+    files = [{"path": p, "role": r, "score": round(s, 2)} for s, p, r, _is_test, _dbg in scored if not _is_test]
+    tests = [p for _, p, _, is_test, _dbg in scored if is_test]
+    score_debug = [
+        {"path": p, **dbg, "total": round(s, 2)}
+        for s, p, _r, _is_test, dbg in scored
+    ]
+    snippets = _pick_snippets(repo, task_text, [f["path"] for f in files], cfg)
+
+    return {
+        "task": task_text,
+        "files": files,
+        "tests": tests[: int(cfg.get("context", {}).get("max_tests_per_pack", 5))],
+        "snippets": snippets,
+        "test_hints": cfg.get("test_hints", {}),
+        "token_budget_hint": cfg.get("context", {}).get("default_token_budget", 3000),
+        "score_debug": score_debug,
+    }
+
+
+def query_by_id(repo: str, task_id: str) -> str | None:
+    conn = open_db(db_path(repo))
+    row = conn.execute(
+        "SELECT text FROM tasks WHERE repo = ? AND task_id = ?",
+        (repo, task_id),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    out = build_index(repo, args.mode, allow_custom_adapters=getattr(args, "allow_custom_adapters", False))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    mode = "light" if args.mode == "light" else "full"
+    out = build_index(repo, mode, allow_custom_adapters=getattr(args, "allow_custom_adapters", False))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_query(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    task_text = args.task
+    if args.task_id:
+        task_text = query_by_id(repo, args.task_id)
+        if task_text is None:
+            raise SystemExit(f"task id not found: {args.task_id}")
+    if not task_text:
+        raise SystemExit("--task or --task-id is required")
+    out = search_candidates(repo, task_text, args.limit)
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def cmd_pack(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    task_text = args.task
+    if args.task_id:
+        task_text = query_by_id(repo, args.task_id)
+        if task_text is None:
+            raise SystemExit(f"task id not found: {args.task_id}")
+    if not task_text:
+        raise SystemExit("--task or --task-id is required")
+
+    cfg = load_repo_config(repo)
+    query = search_candidates(repo, task_text, args.limit)
+    max_files = int(cfg.get("context", {}).get("max_files_per_pack", args.limit))
+
+    pack = {
+        "task": query["task"],
+        "context_budget_tokens": args.token_budget,
+        "selected_files": query["files"][:max_files],
+        "selected_snippets": query.get("snippets", []),
+        "recommended_checks": query["test_hints"],
+        "targeted_tests": query["tests"],
+        "policy": {
+            "worker_allowlist_profile": "lean-code-edit",
+            "deny_high_cost_worker_ops": True,
+            "prefer_symbol_blocks": bool(cfg.get("context", {}).get("prefer_symbol_blocks", True)),
+            "planner_required_for_discovery": True,
+            "force_task_pack_before_worker": True,
+            "worker_allowed_read_modes": ["chunk", "symbol"],
+            "max_read_chunk_lines": int(cfg.get("context", {}).get("max_read_chunk_lines", 120)),
+        },
+    }
+    if args.out:
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(pack, fh, indent=2)
+            fh.write("\n")
+    else:
+        print(json.dumps(pack, indent=2))
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agent-index")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    p_build = sp.add_parser("build")
+    p_build.add_argument("--repo", default=".")
+    p_build.add_argument("--mode", choices=["full", "light"], default="full")
+    p_build.add_argument("--allow-custom-adapters", action="store_true", default=False)
+    p_build.set_defaults(func=cmd_build)
+
+    p_refresh = sp.add_parser("refresh")
+    p_refresh.add_argument("--repo", default=".")
+    p_refresh.add_argument("--mode", choices=["light", "full"], default="light")
+    p_refresh.add_argument("--allow-custom-adapters", action="store_true", default=False)
+    p_refresh.set_defaults(func=cmd_refresh)
+
+    p_query = sp.add_parser("query")
+    p_query.add_argument("--repo", default=".")
+    p_query.add_argument("--task")
+    p_query.add_argument("--task-id")
+    p_query.add_argument("--limit", type=int, default=20)
+    p_query.set_defaults(func=cmd_query)
+
+    p_pack = sp.add_parser("pack")
+    p_pack.add_argument("--repo", default=".")
+    p_pack.add_argument("--task")
+    p_pack.add_argument("--task-id")
+    p_pack.add_argument("--limit", type=int, default=12)
+    p_pack.add_argument("--token-budget", type=int, default=2800)
+    p_pack.add_argument("--out")
+    p_pack.set_defaults(func=cmd_pack)
+    return p
+
+
+def main() -> int:
+    args = parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,2025 @@
+#!/usr/bin/env python3
+"""Ingest local logs and report task-level telemetry for Claude and Codex."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import fcntl
+import json
+import os
+import sqlite3
+import time
+from collections import defaultdict
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from statistics import mean
+from typing import Any
+
+from agentkit_common import default_state_dir, parse_isoish_timestamp, repo_id, repo_root
+
+BUSY_TIMEOUT_MS = 5000
+WRITE_RETRY_ATTEMPTS = 6
+WRITE_RETRY_BASE_SECONDS = 0.2
+WRITER_LOCK_TIMEOUT_SECONDS = 45.0
+
+
+def db_path(repo: str) -> str:
+    return os.path.join(default_state_dir(), f"telemetry-{repo_id(repo)}.db")
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == col for r in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, col: str, ddl: str) -> None:
+    if not _column_exists(conn, table, col):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def _ensure_views(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP VIEW IF EXISTS v_task_kpi")
+    conn.execute(
+        """
+        CREATE VIEW v_task_kpi AS
+        SELECT
+          tr.repo,
+          tr.id AS run_id,
+          tr.task_id,
+          tr.session_branch,
+          tr.session_id,
+          tr.conversation_id,
+          tr.started_at,
+          tr.ended_at,
+          tr.duration_seconds,
+          tr.task_outcome,
+          tr.task_text,
+          tr.complexity_points,
+          tr.token_confidence,
+          tr.attribution_method,
+          tr.tokens_total,
+          tr.tokens_claude,
+          tr.tokens_codex,
+          tr.tokens_prompt_completion,
+          tr.tokens_cache,
+          COALESCE(MAX(ta.files_changed), 0) AS files_changed,
+          COALESCE(MAX(ta.insertions), 0) AS insertions,
+          COALESCE(MAX(ta.deletions), 0) AS deletions,
+          COALESCE(MAX(ta.commit_sha), '') AS commit_sha
+        FROM task_runs tr
+        LEFT JOIN task_artifacts ta
+          ON ta.repo = tr.repo AND ta.task_id = tr.task_id AND COALESCE(ta.session_branch, '') = COALESCE(tr.session_branch, '')
+             AND ta.timestamp >= tr.started_at
+             AND (tr.ended_at IS NULL OR ta.timestamp <= tr.ended_at)
+        GROUP BY tr.id
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS v_repo_built_with_ai")
+    conn.execute(
+        """
+        CREATE VIEW v_repo_built_with_ai AS
+        SELECT
+          repo,
+          run_id,
+          task_id,
+          session_branch,
+          task_text,
+          task_outcome,
+          started_at,
+          ended_at,
+          duration_seconds,
+          tokens_total,
+          tokens_claude,
+          tokens_codex,
+          commit_sha,
+          files_changed,
+          insertions,
+          deletions
+        FROM v_task_kpi
+        WHERE ended_at IS NOT NULL
+        ORDER BY ended_at DESC
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS v_trends")
+    conn.execute(
+        """
+        CREATE VIEW v_trends AS
+        SELECT
+          repo,
+          date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
+          COUNT(*) AS task_count,
+          COALESCE(SUM(tokens_total), 0) AS tokens_total,
+          COALESCE(SUM(tokens_claude), 0) AS tokens_claude,
+          COALESCE(SUM(tokens_codex), 0) AS tokens_codex,
+          COALESCE(AVG(duration_seconds), 0) AS avg_duration_seconds,
+          COALESCE(AVG(complexity_points), 0) AS avg_complexity_points,
+          COALESCE(SUM(files_changed), 0) AS files_changed,
+          COALESCE(SUM(insertions + deletions), 0) AS loc_changed
+        FROM v_task_kpi
+        GROUP BY repo, day
+        ORDER BY day ASC
+        """
+    )
+
+
+def _is_lock_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg or "locked" in msg
+
+
+def _run_write_with_retry(fn: Any) -> Any:
+    for attempt in range(WRITE_RETRY_ATTEMPTS):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if not _is_lock_error(exc) or attempt >= WRITE_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(WRITE_RETRY_BASE_SECONDS * (2**attempt))
+    raise RuntimeError("unreachable retry loop")
+
+
+def _run_write_transaction(conn: sqlite3.Connection, fn: Any) -> Any:
+    def _wrapped() -> Any:
+        began = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            began = True
+            out = fn()
+            conn.execute("COMMIT")
+            return out
+        except Exception:
+            if began:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise
+
+    return _run_write_with_retry(_wrapped)
+
+
+@contextmanager
+def writer_lease(repo: str, timeout_seconds: float = WRITER_LOCK_TIMEOUT_SECONDS) -> Any:
+    lock_path = os.path.join(default_state_dir(), f"telemetry-writer-{repo_id(repo)}.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while True:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SystemExit(f"timed out waiting for telemetry writer lease: {lock_path}")
+                time.sleep(0.1)
+        try:
+            lock_fh.seek(0)
+            lock_fh.truncate(0)
+            lock_fh.write(f"{os.getpid()} {int(time.time())}\n")
+            lock_fh.flush()
+            yield
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def _migrate_task_evt_index(conn: sqlite3.Connection) -> None:
+    """Migrate idx_task_evt_unique to IFNULL-safe definition if stale."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_task_evt_unique'"
+    ).fetchone()
+    if row is None or "IFNULL(session_branch" in (row[0] or ""):
+        return
+    # Stale index lacks IFNULL — duplicate rows may exist.  Deduplicate first.
+    conn.execute(
+        """
+        DELETE FROM task_events
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM task_events
+            GROUP BY repo, task_id, event_type,
+                     IFNULL(session_branch, ''),
+                     IFNULL(worker_branch, ''),
+                     IFNULL(session_id, ''),
+                     IFNULL(conversation_id, ''),
+                     timestamp
+        )
+        """
+    )
+    conn.execute("DROP INDEX idx_task_evt_unique")
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usage_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'claude',
+          raw_source TEXT,
+          session_id TEXT,
+          conversation_id TEXT,
+          branch TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          model TEXT,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_create_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    _ensure_column(conn, "usage_events", "provider", "provider TEXT NOT NULL DEFAULT 'claude'")
+    _ensure_column(conn, "usage_events", "raw_source", "raw_source TEXT")
+    _ensure_column(conn, "usage_events", "conversation_id", "conversation_id TEXT")
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_unique
+        ON usage_events(
+          repo,
+          provider,
+          IFNULL(message_uuid, ''),
+          IFNULL(session_id, ''),
+          IFNULL(conversation_id, ''),
+          IFNULL(branch, ''),
+          IFNULL(timestamp, 0),
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          cache_create_tokens
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          session_branch TEXT,
+          session_id TEXT,
+          conversation_id TEXT,
+          worker_branch TEXT,
+          status TEXT,
+          task_text TEXT,
+          complexity_points INTEGER,
+          task_outcome TEXT,
+          timestamp REAL NOT NULL
+        )
+        """
+    )
+    _ensure_column(conn, "task_events", "session_id", "session_id TEXT")
+    _ensure_column(conn, "task_events", "conversation_id", "conversation_id TEXT")
+    _ensure_column(conn, "task_events", "task_text", "task_text TEXT")
+    _ensure_column(conn, "task_events", "complexity_points", "complexity_points INTEGER")
+    _ensure_column(conn, "task_events", "task_outcome", "task_outcome TEXT")
+
+    _migrate_task_evt_index(conn)
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_evt_unique
+        ON task_events(
+          repo,
+          task_id,
+          event_type,
+          IFNULL(session_branch, ''),
+          IFNULL(worker_branch, ''),
+          IFNULL(session_id, ''),
+          IFNULL(conversation_id, ''),
+          timestamp
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          session_branch TEXT,
+          session_id TEXT,
+          conversation_id TEXT,
+          started_at REAL NOT NULL,
+          ended_at REAL,
+          duration_seconds REAL,
+          task_text TEXT,
+          complexity_points INTEGER,
+          task_outcome TEXT,
+          token_confidence TEXT,
+          attribution_method TEXT,
+          tokens_total INTEGER NOT NULL DEFAULT 0,
+          tokens_claude INTEGER NOT NULL DEFAULT 0,
+          tokens_codex INTEGER NOT NULL DEFAULT 0,
+          tokens_prompt_completion INTEGER NOT NULL DEFAULT 0,
+          tokens_cache INTEGER NOT NULL DEFAULT 0,
+          created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_unique
+        ON task_runs(repo, task_id, IFNULL(session_branch, ''), started_at)
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_artifacts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          session_branch TEXT,
+          run_id INTEGER,
+          commit_sha TEXT,
+          files_changed INTEGER,
+          insertions INTEGER,
+          deletions INTEGER,
+          timestamp REAL NOT NULL,
+          source_event_id INTEGER,
+          FOREIGN KEY(run_id) REFERENCES task_runs(id),
+          FOREIGN KEY(source_event_id) REFERENCES task_events(id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_artifact_unique
+        ON task_artifacts(
+          repo,
+          task_id,
+          IFNULL(session_branch, ''),
+          IFNULL(commit_sha, ''),
+          IFNULL(files_changed, 0),
+          IFNULL(insertions, 0),
+          IFNULL(deletions, 0),
+          timestamp
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'claude',
+          session_id TEXT,
+          conversation_id TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          tool_name TEXT NOT NULL
+        )
+        """
+    )
+    _ensure_column(conn, "tool_calls", "provider", "provider TEXT NOT NULL DEFAULT 'claude'")
+    _ensure_column(conn, "tool_calls", "conversation_id", "conversation_id TEXT")
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_unique
+        ON tool_calls(
+          repo,
+          provider,
+          IFNULL(message_uuid, ''),
+          IFNULL(session_id, ''),
+          IFNULL(conversation_id, ''),
+          IFNULL(timestamp, 0),
+          tool_name
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ingest_checkpoints (
+          source_key TEXT PRIMARY KEY,
+          repo TEXT NOT NULL,
+          cursor INTEGER NOT NULL DEFAULT 0,
+          file_inode TEXT,
+          file_size INTEGER,
+          file_mtime REAL,
+          updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ingest_checkpoints_repo
+        ON ingest_checkpoints(repo)
+        """
+    )
+
+    _ensure_views(conn)
+
+
+def _open_db(path: str, mode: str) -> sqlite3.Connection:
+    if mode not in {"read", "write"}:
+        raise ValueError(f"invalid DB mode: {mode}")
+
+    if mode == "write":
+        conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _ensure_schema(conn)
+        return conn
+
+    if not os.path.exists(path):
+        init_conn = _open_db(path, "write")
+        init_conn.close()
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_MS / 1000)
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    return conn
+
+
+@dataclass
+class Usage:
+    repo: str
+    provider: str
+    raw_source: str
+    session_id: str | None
+    conversation_id: str | None
+    branch: str | None
+    message_uuid: str | None
+    timestamp: float | None
+    model: str | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_create_tokens: int
+
+
+@dataclass
+class ToolCall:
+    repo: str
+    provider: str
+    session_id: str | None
+    conversation_id: str | None
+    message_uuid: str | None
+    timestamp: float | None
+    tool_name: str
+
+
+@dataclass
+class Attribution:
+    method: str
+    confidence: str
+
+
+def _repo_path_from_obj(obj: dict[str, Any]) -> str | None:
+    candidates = [
+        obj.get("cwd"),
+        obj.get("repo"),
+        obj.get("workspace"),
+        obj.get("project_path"),
+        (obj.get("context") or {}).get("cwd") if isinstance(obj.get("context"), dict) else None,
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c
+    return None
+
+
+def _repo_matches(repo_filter: str, obj: dict[str, Any]) -> bool:
+    candidate = _repo_path_from_obj(obj)
+    if not candidate:
+        return False
+    repo_abs = os.path.abspath(repo_filter)
+    cand_abs = os.path.abspath(candidate)
+    return cand_abs == repo_abs or cand_abs.startswith(repo_abs + os.sep)
+
+
+def _extract_usage_dict(obj: dict[str, Any]) -> dict[str, Any] | None:
+    msg = obj.get("message")
+    if isinstance(msg, dict):
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            return usage
+    usage = obj.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    return None
+
+
+def _int_any(d: dict[str, Any], keys: list[str]) -> int:
+    for k in keys:
+        if k in d:
+            try:
+                return int(d.get(k) or 0)
+            except Exception:
+                return 0
+    return 0
+
+
+def _extract_tokens(usage: dict[str, Any]) -> tuple[int, int, int, int]:
+    cc = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    input_tokens = _int_any(usage, ["input_tokens", "prompt_tokens", "input", "tokens_in"])
+    output_tokens = _int_any(usage, ["output_tokens", "completion_tokens", "output", "tokens_out"])
+    cache_read = _int_any(usage, ["cache_read_input_tokens", "cached_tokens", "cache_read_tokens"])
+    cache_create = _int_any(
+        usage,
+        [
+            "cache_creation_input_tokens",
+            "cache_create_tokens",
+            "cache_write_tokens",
+        ],
+    )
+    if cache_create == 0 and isinstance(cc, dict):
+        cache_create = int(
+            cc.get("ephemeral_1h_input_tokens", 0)
+            or cc.get("ephemeral_5m_input_tokens", 0)
+            or cc.get("input_tokens", 0)
+            or 0
+        )
+    return input_tokens, output_tokens, cache_read, cache_create
+
+
+def parse_usage_obj(
+    obj: dict[str, Any],
+    repo_filter: str,
+    provider: str,
+    raw_source: str,
+) -> Usage | None:
+    if not _repo_matches(repo_filter, obj):
+        return None
+
+    usage = _extract_usage_dict(obj)
+    if not usage:
+        return None
+
+    input_tokens, output_tokens, cache_read, cache_create = _extract_tokens(usage)
+    if input_tokens == 0 and output_tokens == 0 and cache_read == 0 and cache_create == 0:
+        return None
+
+    msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+
+    return Usage(
+        repo=repo_root(repo_filter),
+        provider=provider,
+        raw_source=raw_source,
+        session_id=(obj.get("sessionId") or obj.get("session_id") or obj.get("session")),
+        conversation_id=(
+            obj.get("conversationId")
+            or obj.get("conversation_id")
+            or obj.get("thread_id")
+            or (msg.get("conversation_id") if isinstance(msg, dict) else None)
+        ),
+        branch=(obj.get("gitBranch") or obj.get("branch")),
+        message_uuid=(obj.get("uuid") or obj.get("message_uuid") or obj.get("id")),
+        timestamp=parse_isoish_timestamp(obj.get("timestamp") or obj.get("ts")),
+        model=(msg.get("model") if isinstance(msg, dict) else None) or obj.get("model"),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_create_tokens=cache_create,
+    )
+
+
+def _extract_tool_name(obj: dict[str, Any], provider: str) -> str | None:
+    msg = obj.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else obj.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in {"tool_use", "tool-call"}:
+                n = str(part.get("name") or part.get("tool_name") or "").strip()
+                if n:
+                    return n
+    if provider == "codex":
+        tc = obj.get("tool") or obj.get("tool_name")
+        if isinstance(tc, str) and tc.strip():
+            return tc.strip()
+    return None
+
+
+def _iter_jsonl_files(root: str) -> list[str]:
+    if not os.path.isdir(root):
+        return []
+    out: list[str] = []
+    for r, _, files in os.walk(root):
+        for name in files:
+            if name.endswith(".jsonl"):
+                out.append(os.path.join(r, name))
+    return out
+
+
+def _file_inode(st: os.stat_result) -> str:
+    return f"{st.st_dev}:{st.st_ino}"
+
+
+def _checkpoint_get(conn: sqlite3.Connection, repo: str, source_key: str) -> tuple[int, str | None, int | None, float | None]:
+    row = conn.execute(
+        """
+        SELECT cursor, file_inode, file_size, file_mtime
+        FROM ingest_checkpoints
+        WHERE repo = ? AND source_key = ?
+        """,
+        (repo, source_key),
+    ).fetchone()
+    if not row:
+        return 0, None, None, None
+    return int(row[0] or 0), row[1], (int(row[2]) if row[2] is not None else None), row[3]
+
+
+def _checkpoint_set(
+    conn: sqlite3.Connection,
+    repo: str,
+    source_key: str,
+    cursor: int,
+    inode: str | None,
+    size: int | None,
+    mtime: float | None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO ingest_checkpoints(source_key, repo, cursor, file_inode, file_size, file_mtime, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_key) DO UPDATE SET
+          repo = excluded.repo,
+          cursor = excluded.cursor,
+          file_inode = excluded.file_inode,
+          file_size = excluded.file_size,
+          file_mtime = excluded.file_mtime,
+          updated_at = excluded.updated_at
+        """,
+        (source_key, repo, int(max(0, cursor)), inode, size, mtime, time.time()),
+    )
+
+
+def _source_start_offset(
+    checkpoint: tuple[int, str | None, int | None, float | None],
+    st: os.stat_result,
+) -> int:
+    cursor, cp_inode, cp_size, cp_mtime = checkpoint
+    inode = _file_inode(st)
+    if cp_inode and cp_inode != inode:
+        return 0
+    if cp_size is not None and st.st_size < cp_size:
+        return 0
+    if cp_mtime is not None and st.st_mtime < cp_mtime:
+        return 0
+    if cursor < 0 or cursor > st.st_size:
+        return 0
+    return cursor
+
+
+def ingest_usage_provider(
+    conn: sqlite3.Connection,
+    repo: str,
+    logs_root: str,
+    provider: str,
+) -> dict[str, int]:
+    inserted_usage = 0
+    inserted_tools = 0
+    files_scanned = 0
+
+    files = _iter_jsonl_files(os.path.join(logs_root, "projects"))
+    if not files:
+        # Codex logs might be directly under root in some setups.
+        files = _iter_jsonl_files(logs_root)
+
+    for p in files:
+        try:
+            st_before = os.stat(p)
+            source_key = f"usage:{provider}:{os.path.abspath(p)}"
+            start = _source_start_offset(_checkpoint_get(conn, repo, source_key), st_before)
+            end_pos = start
+            files_scanned += 1
+            with open(p, "r", encoding="utf-8") as fh:
+                fh.seek(start)
+                while True:
+                    line = fh.readline()
+                    if not line:
+                        end_pos = fh.tell()
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    u = parse_usage_obj(obj, repo, provider, p)
+                    if u:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO usage_events(
+                              repo, provider, raw_source, session_id, conversation_id, branch, message_uuid, timestamp, model,
+                              input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                u.repo,
+                                u.provider,
+                                u.raw_source,
+                                u.session_id,
+                                u.conversation_id,
+                                u.branch,
+                                u.message_uuid,
+                                u.timestamp,
+                                u.model,
+                                u.input_tokens,
+                                u.output_tokens,
+                                u.cache_read_tokens,
+                                u.cache_create_tokens,
+                            ),
+                        )
+                        inserted_usage += 1
+
+                    tool_name = _extract_tool_name(obj, provider)
+                    if tool_name and _repo_matches(repo, obj):
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO tool_calls(
+                              repo, provider, session_id, conversation_id, message_uuid, timestamp, tool_name
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                repo,
+                                provider,
+                                (obj.get("sessionId") or obj.get("session_id") or obj.get("session")),
+                                (obj.get("conversationId") or obj.get("conversation_id") or obj.get("thread_id")),
+                                (obj.get("uuid") or obj.get("message_uuid") or obj.get("id")),
+                                parse_isoish_timestamp(obj.get("timestamp") or obj.get("ts")),
+                                tool_name,
+                            ),
+                        )
+                        inserted_tools += 1
+            st_after = os.stat(p)
+            _checkpoint_set(
+                conn,
+                repo,
+                source_key,
+                end_pos,
+                _file_inode(st_after),
+                int(st_after.st_size),
+                float(st_after.st_mtime),
+            )
+        except OSError:
+            continue
+
+    return {"usage_events": inserted_usage, "tool_calls": inserted_tools, "files_scanned": files_scanned}
+
+
+def _safe_int(v: Any) -> int | None:
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+def _normalize_outcome(event_type: str, status: str | None) -> str | None:
+    if event_type == "task_completed":
+        return "completed"
+    if event_type == "task_failed":
+        return status or "failed"
+    return None
+
+
+def ingest_task_events(conn: sqlite3.Connection, repo: str, events_path: str) -> int:
+    if not os.path.exists(events_path):
+        return 0
+
+    inserted = 0
+    source_key = f"task-events:{os.path.abspath(events_path)}"
+    st_before = os.stat(events_path)
+    start = _source_start_offset(_checkpoint_get(conn, repo, source_key), st_before)
+    end_pos = start
+    with open(events_path, "r", encoding="utf-8") as fh:
+        fh.seek(start)
+        while True:
+            line = fh.readline()
+            if not line:
+                end_pos = fh.tell()
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if obj.get("repo") and os.path.abspath(obj["repo"]) != os.path.abspath(repo):
+                continue
+
+            task_id = obj.get("task_id")
+            evt = obj.get("event_type")
+            if not task_id or not evt:
+                continue
+
+            ts = parse_isoish_timestamp(obj.get("timestamp")) or float(obj.get("ts", 0) or 0)
+            if not ts:
+                ts = time.time()
+
+            complexity = _safe_int(obj.get("complexity_points"))
+            if complexity is not None and (complexity < 1 or complexity > 5):
+                complexity = None
+
+            status = obj.get("status")
+            task_outcome = _normalize_outcome(str(evt), status)
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO task_events(
+                  repo, task_id, event_type, session_branch, session_id, conversation_id,
+                  worker_branch, status, task_text, complexity_points, task_outcome, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo,
+                    str(task_id),
+                    str(evt),
+                    obj.get("session_branch"),
+                    obj.get("session_id"),
+                    obj.get("conversation_id"),
+                    obj.get("worker_branch"),
+                    status,
+                    obj.get("task_text"),
+                    complexity,
+                    task_outcome,
+                    ts,
+                ),
+            )
+            inserted += 1
+
+            commit_sha = obj.get("commit_sha")
+            files_changed = _safe_int(obj.get("files_changed"))
+            insertions = _safe_int(obj.get("insertions"))
+            deletions = _safe_int(obj.get("deletions"))
+            if commit_sha or files_changed is not None or insertions is not None or deletions is not None:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO task_artifacts(
+                      repo, task_id, session_branch, run_id, commit_sha, files_changed, insertions, deletions, timestamp, source_event_id
+                    ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        repo,
+                        str(task_id),
+                        obj.get("session_branch"),
+                        commit_sha,
+                        files_changed,
+                        insertions,
+                        deletions,
+                        ts,
+                    ),
+                )
+
+    st_after = os.stat(events_path)
+    _checkpoint_set(
+        conn,
+        repo,
+        source_key,
+        end_pos,
+        _file_inode(st_after),
+        int(st_after.st_size),
+        float(st_after.st_mtime),
+    )
+    return inserted
+
+
+def _build_task_runs(conn: sqlite3.Connection, repo: str) -> int:
+    rows = conn.execute(
+        """
+        SELECT id, task_id, event_type, session_branch, session_id, conversation_id,
+               status, task_text, complexity_points, task_outcome, timestamp
+        FROM task_events
+        WHERE repo = ?
+        ORDER BY timestamp ASC, id ASC
+        """,
+        (repo,),
+    ).fetchall()
+
+    conn.execute("DELETE FROM task_runs WHERE repo = ?", (repo,))
+
+    active: dict[tuple[str, str | None], list[dict[str, Any]]] = defaultdict(list)
+    completed_runs: list[dict[str, Any]] = []
+
+    for (
+        _,
+        task_id,
+        evt,
+        session_branch,
+        session_id,
+        conversation_id,
+        status,
+        task_text,
+        complexity_points,
+        task_outcome,
+        ts,
+    ) in rows:
+        key = (str(task_id), session_branch)
+
+        if evt == "task_started":
+            run = {
+                "repo": repo,
+                "task_id": str(task_id),
+                "session_branch": session_branch,
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+                "started_at": float(ts),
+                "ended_at": None,
+                "duration_seconds": None,
+                "task_text": task_text,
+                "complexity_points": complexity_points,
+                "task_outcome": None,
+            }
+            active[key].append(run)
+            continue
+
+        if evt not in {"task_completed", "task_failed"}:
+            continue
+
+        if active[key]:
+            run = active[key].pop(0)
+        else:
+            run = {
+                "repo": repo,
+                "task_id": str(task_id),
+                "session_branch": session_branch,
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+                "started_at": float(ts),
+                "ended_at": None,
+                "duration_seconds": None,
+                "task_text": task_text,
+                "complexity_points": complexity_points,
+                "task_outcome": None,
+            }
+
+        run["ended_at"] = float(ts)
+        run["duration_seconds"] = max(0.0, float(ts) - float(run["started_at"]))
+        run["task_outcome"] = task_outcome or (status if evt == "task_failed" else "completed")
+        if not run.get("task_text") and task_text:
+            run["task_text"] = task_text
+        if run.get("complexity_points") is None and complexity_points is not None:
+            run["complexity_points"] = complexity_points
+        if run.get("session_id") is None and session_id:
+            run["session_id"] = session_id
+        if run.get("conversation_id") is None and conversation_id:
+            run["conversation_id"] = conversation_id
+        completed_runs.append(run)
+
+    for runs in active.values():
+        completed_runs.extend(runs)
+
+    inserted = 0
+    for run in completed_runs:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO task_runs(
+              repo, task_id, session_branch, session_id, conversation_id,
+              started_at, ended_at, duration_seconds, task_text, complexity_points, task_outcome
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run["repo"],
+                run["task_id"],
+                run["session_branch"],
+                run["session_id"],
+                run["conversation_id"],
+                run["started_at"],
+                run["ended_at"],
+                run["duration_seconds"],
+                run["task_text"],
+                run["complexity_points"],
+                run["task_outcome"],
+            ),
+        )
+        inserted += 1
+
+    return inserted
+
+
+def _run_candidates(run: sqlite3.Row, usage_evt: sqlite3.Row) -> tuple[int, Attribution] | None:
+    run_id, session_branch, run_session_id, run_conv_id, started_at, ended_at = run
+    evt_id, _, provider, _, evt_session_id, evt_conv_id, evt_branch, _, evt_ts, *_ = usage_evt
+
+    if evt_ts is None or started_at is None:
+        return None
+
+    strict_window = bool(ended_at is not None and started_at <= evt_ts <= ended_at)
+    fallback_window = bool(started_at - 60 <= evt_ts <= (ended_at if ended_at is not None else started_at + 43200) + 120)
+
+    if not strict_window and not fallback_window:
+        return None
+
+    score = 0
+    method = "time_window"
+    confidence = "low"
+
+    if run_conv_id and evt_conv_id and run_conv_id == evt_conv_id:
+        score += 6
+        method = "conversation_link"
+        confidence = "high"
+    if run_session_id and evt_session_id and run_session_id == evt_session_id:
+        score += 5
+        if method == "time_window":
+            method = "session_link"
+        confidence = "high"
+    if session_branch and evt_branch and session_branch == evt_branch:
+        score += 4
+        if method == "time_window":
+            method = "branch_link"
+        if confidence != "high":
+            confidence = "medium"
+    if strict_window:
+        score += 3
+        if method == "time_window":
+            method = "strict_time_window"
+        if confidence == "low":
+            confidence = "medium"
+    elif fallback_window:
+        score += 1
+
+    if score <= 0:
+        return None
+
+    return score, Attribution(method=method, confidence=confidence)
+
+
+def _attribution_totals(conn: sqlite3.Connection, repo: str) -> dict[int, dict[str, Any]]:
+    conn.row_factory = sqlite3.Row
+    runs = conn.execute(
+        """
+        SELECT id, session_branch, session_id, conversation_id, started_at, ended_at
+        FROM task_runs
+        WHERE repo = ?
+        ORDER BY started_at ASC, id ASC
+        """,
+        (repo,),
+    ).fetchall()
+    usage = conn.execute(
+        """
+        SELECT id, repo, provider, raw_source, session_id, conversation_id, branch, message_uuid, timestamp,
+               input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
+        FROM usage_events
+        WHERE repo = ?
+        ORDER BY timestamp ASC, id ASC
+        """,
+        (repo,),
+    ).fetchall()
+
+    totals: dict[int, dict[str, Any]] = {
+        int(r[0]): {
+            "tokens_total": 0,
+            "tokens_claude": 0,
+            "tokens_codex": 0,
+            "tokens_prompt_completion": 0,
+            "tokens_cache": 0,
+            "confidence": "none",
+            "method": "unattributed",
+        }
+        for r in runs
+    }
+
+    confidence_rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
+    for evt in usage:
+        candidates: list[tuple[int, int, Attribution]] = []
+        for run in runs:
+            scored = _run_candidates(run, evt)
+            if scored is None:
+                continue
+            score, attr = scored
+            candidates.append((int(run[0]), score, attr))
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_score = candidates[0][1]
+        best = [c for c in candidates if c[1] == best_score]
+        if len(best) > 1:
+            chosen = sorted(best, key=lambda x: x[0])[0]
+            conf = "low"
+            method = "ambiguous_overlap"
+        else:
+            chosen = best[0]
+            conf = chosen[2].confidence
+            method = chosen[2].method
+
+        run_id = chosen[0]
+        input_tokens = int(evt[9] or 0)
+        output_tokens = int(evt[10] or 0)
+        cache_read = int(evt[11] or 0)
+        cache_create = int(evt[12] or 0)
+        total = input_tokens + output_tokens + cache_read + cache_create
+
+        t = totals[run_id]
+        t["tokens_total"] += total
+        t["tokens_prompt_completion"] += input_tokens + output_tokens
+        t["tokens_cache"] += cache_read + cache_create
+        if (evt[2] or "claude") == "codex":
+            t["tokens_codex"] += total
+        else:
+            t["tokens_claude"] += total
+
+        if confidence_rank[conf] > confidence_rank[t["confidence"]]:
+            t["confidence"] = conf
+            t["method"] = method
+
+    return totals
+
+
+def _refresh_task_run_metrics(conn: sqlite3.Connection, repo: str) -> None:
+    totals = _attribution_totals(conn, repo)
+    for run_id, t in totals.items():
+        conn.execute(
+            """
+            UPDATE task_runs
+            SET tokens_total = ?,
+                tokens_claude = ?,
+                tokens_codex = ?,
+                tokens_prompt_completion = ?,
+                tokens_cache = ?,
+                token_confidence = ?,
+                attribution_method = ?
+            WHERE id = ?
+            """,
+            (
+                t["tokens_total"],
+                t["tokens_claude"],
+                t["tokens_codex"],
+                t["tokens_prompt_completion"],
+                t["tokens_cache"],
+                t["confidence"],
+                t["method"],
+                run_id,
+            ),
+        )
+
+
+def _link_artifacts_to_runs(conn: sqlite3.Connection, repo: str) -> None:
+    artifacts = conn.execute(
+        """
+        SELECT id, task_id, session_branch, timestamp
+        FROM task_artifacts
+        WHERE repo = ? AND run_id IS NULL
+        """,
+        (repo,),
+    ).fetchall()
+    for art_id, task_id, session_branch, ts in artifacts:
+        run = conn.execute(
+            """
+            SELECT id
+            FROM task_runs
+            WHERE repo = ?
+              AND task_id = ?
+              AND COALESCE(session_branch, '') = COALESCE(?, '')
+              AND started_at <= ?
+              AND (ended_at IS NULL OR ended_at >= ?)
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (repo, task_id, session_branch, ts, ts),
+        ).fetchone()
+        if run:
+            conn.execute("UPDATE task_artifacts SET run_id = ? WHERE id = ?", (run[0], art_id))
+
+
+def _compute_trends(conn: sqlite3.Connection, repo: str, window_days: int) -> dict[str, Any]:
+    cutoff = time.time() - (window_days * 86400)
+    rows = conn.execute(
+        """
+        SELECT
+          date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
+          COUNT(*) AS task_count,
+          COALESCE(SUM(tokens_total), 0) AS tokens_total,
+          COALESCE(AVG(duration_seconds), 0) AS avg_duration_seconds,
+          COALESCE(AVG(complexity_points), 0) AS avg_complexity_points,
+          COALESCE(SUM(tokens_codex), 0) AS tokens_codex,
+          COALESCE(SUM(tokens_claude), 0) AS tokens_claude,
+          COALESCE(SUM(files_changed), 0) AS files_changed,
+          COALESCE(SUM(insertions + deletions), 0) AS loc_changed
+        FROM v_task_kpi
+        WHERE repo = ? AND COALESCE(ended_at, started_at) >= ?
+        GROUP BY day
+        ORDER BY day ASC
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    points: list[dict[str, Any]] = []
+    for i, r in enumerate(rows):
+        task_count = int(r[1])
+        tokens_total = int(r[2])
+        points.append(
+            {
+                "day": r[0],
+                "task_count": task_count,
+                "tokens_total": tokens_total,
+                "tokens_per_task": round(tokens_total / task_count, 2) if task_count else 0.0,
+                "avg_duration_seconds": round(float(r[3] or 0.0), 2),
+                "avg_complexity_points": round(float(r[4] or 0.0), 2),
+                "tokens_codex": int(r[5]),
+                "tokens_claude": int(r[6]),
+                "files_changed": int(r[7]),
+                "loc_changed": int(r[8]),
+                "x": i,
+            }
+        )
+
+    def slope(vals: list[tuple[float, float]]) -> float:
+        if len(vals) < 2:
+            return 0.0
+        xs = [v[0] for v in vals]
+        ys = [v[1] for v in vals]
+        x_mean = mean(xs)
+        y_mean = mean(ys)
+        num = sum((x - x_mean) * (y - y_mean) for x, y in vals)
+        den = sum((x - x_mean) ** 2 for x in xs)
+        if den == 0:
+            return 0.0
+        return num / den
+
+    slope_tokens_per_task = slope([(p["x"], p["tokens_per_task"]) for p in points])
+    slope_tokens_per_duration = slope(
+        [
+            (p["x"], (p["tokens_total"] / p["avg_duration_seconds"]) if p["avg_duration_seconds"] > 0 else 0.0)
+            for p in points
+        ]
+    )
+    slope_tokens_per_complexity = slope(
+        [
+            (p["x"], (p["tokens_total"] / p["avg_complexity_points"]) if p["avg_complexity_points"] > 0 else 0.0)
+            for p in points
+        ]
+    )
+
+    direction = "flat"
+    if slope_tokens_per_task > 0.01:
+        direction = "up"
+    elif slope_tokens_per_task < -0.01:
+        direction = "down"
+
+    return {
+        "window_days": window_days,
+        "points": points,
+        "slopes": {
+            "tokens_per_task_per_day": round(slope_tokens_per_task, 4),
+            "tokens_per_duration_per_day": round(slope_tokens_per_duration, 4),
+            "tokens_per_complexity_per_day": round(slope_tokens_per_complexity, 4),
+            "direction_tokens_per_task": direction,
+        },
+    }
+
+
+def _rows_for_dataset(conn: sqlite3.Connection, repo: str, dataset: str, window_days: int) -> list[dict[str, Any]]:
+    cutoff = time.time() - (window_days * 86400)
+    if dataset == "task_kpi":
+        cur = conn.execute(
+            """
+            SELECT
+              repo, run_id, task_id, session_branch, task_text, task_outcome,
+              started_at, ended_at, duration_seconds, complexity_points,
+              token_confidence, attribution_method,
+              tokens_total, tokens_claude, tokens_codex,
+              tokens_prompt_completion, tokens_cache,
+              files_changed, insertions, deletions, commit_sha
+            FROM v_task_kpi
+            WHERE repo = ? AND started_at >= ?
+            ORDER BY started_at ASC
+            """,
+            (repo, cutoff),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    if dataset == "build_log":
+        cur = conn.execute(
+            """
+            SELECT
+              repo, run_id, task_id, session_branch, task_text, task_outcome,
+              started_at, ended_at, duration_seconds,
+              tokens_total, tokens_claude, tokens_codex,
+              commit_sha, files_changed, insertions, deletions
+            FROM v_repo_built_with_ai
+            WHERE repo = ? AND started_at >= ?
+            ORDER BY ended_at DESC
+            """,
+            (repo, cutoff),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    if dataset == "trends":
+        t = _compute_trends(conn, repo, window_days)
+        rows = []
+        for p in t["points"]:
+            rows.append(
+                {
+                    "day": p["day"],
+                    "task_count": p["task_count"],
+                    "tokens_total": p["tokens_total"],
+                    "tokens_per_task": p["tokens_per_task"],
+                    "avg_duration_seconds": p["avg_duration_seconds"],
+                    "avg_complexity_points": p["avg_complexity_points"],
+                    "tokens_codex": p["tokens_codex"],
+                    "tokens_claude": p["tokens_claude"],
+                    "files_changed": p["files_changed"],
+                    "loc_changed": p["loc_changed"],
+                    "slope_tokens_per_task_per_day": t["slopes"]["tokens_per_task_per_day"],
+                    "slope_tokens_per_duration_per_day": t["slopes"]["tokens_per_duration_per_day"],
+                    "slope_tokens_per_complexity_per_day": t["slopes"]["tokens_per_complexity_per_day"],
+                    "direction_tokens_per_task": t["slopes"]["direction_tokens_per_task"],
+                }
+            )
+        return rows
+
+    raise SystemExit(f"unsupported dataset: {dataset}")
+
+
+def _emit_dataset(rows: list[dict[str, Any]], out_format: str, out_path: str | None) -> None:
+    if out_format == "json":
+        payload = json.dumps(rows, indent=2)
+        if out_path:
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(payload + "\n")
+        else:
+            print(payload)
+        return
+
+    # csv
+    fieldnames: list[str] = []
+    if rows:
+        seen = set()
+        for row in rows:
+            for k in row.keys():
+                if k not in seen:
+                    seen.add(k)
+                    fieldnames.append(k)
+
+    if out_path:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        fh_obj = open(out_path, "w", encoding="utf-8", newline="")
+        close_after = True
+    else:
+        import sys
+
+        fh_obj = sys.stdout
+        close_after = False
+
+    try:
+        writer = csv.DictWriter(fh_obj, fieldnames=fieldnames)
+        if fieldnames:
+            writer.writeheader()
+            writer.writerows(rows)
+    finally:
+        if close_after:
+            fh_obj.close()
+
+
+def _recompute_derived_tables(conn: sqlite3.Connection, repo: str) -> int:
+    run_count = _build_task_runs(conn, repo)
+    _link_artifacts_to_runs(conn, repo)
+    _refresh_task_run_metrics(conn, repo)
+    return run_count
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    with writer_lease(repo):
+        conn = _open_db(db_path(repo), "write")
+
+        def _txn() -> tuple[dict[str, int], dict[str, int], int, int]:
+            claude_stats = ingest_usage_provider(conn, repo, args.claude_home, "claude")
+            codex_stats = ingest_usage_provider(conn, repo, args.codex_home, "codex")
+            task_stats = ingest_task_events(conn, repo, args.events)
+            run_count = _recompute_derived_tables(conn, repo)
+            return claude_stats, codex_stats, task_stats, run_count
+
+        claude_stats, codex_stats, task_stats, run_count = _run_write_transaction(conn, _txn)
+        conn.close()
+
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "usage_events_ingested": claude_stats["usage_events"] + codex_stats["usage_events"],
+                "usage_events_by_provider": {
+                    "claude": claude_stats["usage_events"],
+                    "codex": codex_stats["usage_events"],
+                },
+                "tool_calls_ingested": claude_stats["tool_calls"] + codex_stats["tool_calls"],
+                "tool_calls_by_provider": {
+                    "claude": claude_stats["tool_calls"],
+                    "codex": codex_stats["tool_calls"],
+                },
+                "task_events_ingested": task_stats,
+                "task_runs_built": run_count,
+                "incremental": True,
+                "files_scanned_by_provider": {
+                    "claude": claude_stats.get("files_scanned", 0),
+                    "codex": codex_stats.get("files_scanned", 0),
+                },
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    with writer_lease(repo):
+        conn = _open_db(db_path(repo), "write")
+
+        def _txn() -> tuple[dict[str, int], dict[str, int], int, int]:
+            conn.execute("DELETE FROM usage_events WHERE repo = ?", (repo,))
+            conn.execute("DELETE FROM tool_calls WHERE repo = ?", (repo,))
+            conn.execute("DELETE FROM task_events WHERE repo = ?", (repo,))
+            conn.execute("DELETE FROM task_runs WHERE repo = ?", (repo,))
+            conn.execute("DELETE FROM task_artifacts WHERE repo = ?", (repo,))
+            conn.execute("DELETE FROM ingest_checkpoints WHERE repo = ?", (repo,))
+
+            claude_stats = ingest_usage_provider(conn, repo, args.claude_home, "claude")
+            codex_stats = ingest_usage_provider(conn, repo, args.codex_home, "codex")
+            task_stats = ingest_task_events(conn, repo, args.events)
+            run_count = _recompute_derived_tables(conn, repo)
+            return claude_stats, codex_stats, task_stats, run_count
+
+        claude_stats, codex_stats, task_stats, run_count = _run_write_transaction(conn, _txn)
+        conn.close()
+
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "mode": "rebuild",
+                "usage_events_ingested": claude_stats["usage_events"] + codex_stats["usage_events"],
+                "usage_events_by_provider": {
+                    "claude": claude_stats["usage_events"],
+                    "codex": codex_stats["usage_events"],
+                },
+                "tool_calls_ingested": claude_stats["tool_calls"] + codex_stats["tool_calls"],
+                "tool_calls_by_provider": {
+                    "claude": claude_stats["tool_calls"],
+                    "codex": codex_stats["tool_calls"],
+                },
+                "task_events_ingested": task_stats,
+                "task_runs_built": run_count,
+                "incremental": False,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    cutoff = _cutoff_from_args(args)
+
+    completed = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM task_runs
+        WHERE repo = ? AND task_outcome = 'completed' AND COALESCE(ended_at, started_at) >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()[0]
+
+    totals = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(tokens_total), 0),
+          COALESCE(SUM(tokens_claude), 0),
+          COALESCE(SUM(tokens_codex), 0),
+          COALESCE(SUM(tokens_prompt_completion), 0),
+          COALESCE(SUM(tokens_cache), 0)
+        FROM task_runs
+        WHERE repo = ? AND started_at >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()
+
+    grand = int(totals[0] or 0)
+    kpi = (grand / completed) if completed else None
+
+    confidence_rows = conn.execute(
+        """
+        SELECT token_confidence, COUNT(*)
+        FROM task_runs
+        WHERE repo = ? AND started_at >= ?
+        GROUP BY token_confidence
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    trends = _compute_trends(conn, repo, args.window_days)
+
+    task_sample = conn.execute(
+        """
+        SELECT task_id, session_branch, task_text, tokens_claude, tokens_codex, duration_seconds, complexity_points, task_outcome
+        FROM v_task_kpi
+        WHERE repo = ? AND started_at >= ?
+        ORDER BY started_at DESC
+        LIMIT 10
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    mean_dur = None
+    if trends["points"]:
+        durs = [p["avg_duration_seconds"] for p in trends["points"] if p["avg_duration_seconds"] > 0]
+        mean_dur = round(sum(durs) / len(durs), 2) if durs else None
+    trend_dir = trends["slopes"].get("direction_tokens_per_task", "flat")
+
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": args.window_days,
+                "since": getattr(args, "since", None),
+                "completed_tasks": int(completed),
+                "tokens": {
+                    "total": grand,
+                    "claude": int(totals[1] or 0),
+                    "codex": int(totals[2] or 0),
+                    "prompt_completion": int(totals[3] or 0),
+                    "cache": int(totals[4] or 0),
+                },
+                "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
+                "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
+                "trend": trends["slopes"],
+                "velocity_summary": {
+                    "tasks_in_window": int(completed),
+                    "total_tokens": grand,
+                    "mean_duration_seconds": mean_dur,
+                    "trend_direction": trend_dir,
+                },
+                "recent_task_samples": [
+                    {
+                        "task_id": r[0],
+                        "session_branch": r[1],
+                        "task_text": r[2],
+                        "tokens_claude": int(r[3] or 0),
+                        "tokens_codex": int(r[4] or 0),
+                        "duration_seconds": round(float(r[5] or 0.0), 2),
+                        "complexity_points": r[6],
+                        "task_outcome": r[7],
+                    }
+                    for r in task_sample
+                ],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_task(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    rows = conn.execute(
+        """
+        SELECT
+          run_id, task_id, session_branch, task_text, task_outcome,
+          started_at, ended_at, duration_seconds, complexity_points,
+          token_confidence, attribution_method,
+          tokens_total, tokens_claude, tokens_codex,
+          tokens_prompt_completion, tokens_cache,
+          commit_sha, files_changed, insertions, deletions
+        FROM v_task_kpi
+        WHERE repo = ? AND task_id = ?
+        ORDER BY started_at ASC
+        """,
+        (repo, args.task_id),
+    ).fetchall()
+    if not rows:
+        raise SystemExit(f"no task run found for task_id={args.task_id}")
+
+    evts = conn.execute(
+        """
+        SELECT event_type, session_branch, session_id, conversation_id, worker_branch,
+               status, task_text, complexity_points, task_outcome, timestamp
+        FROM task_events
+        WHERE repo = ? AND task_id = ?
+        ORDER BY timestamp ASC
+        """,
+        (repo, args.task_id),
+    ).fetchall()
+
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "task_id": args.task_id,
+                "runs": [
+                    {
+                        "run_id": r[0],
+                        "task_id": r[1],
+                        "session_branch": r[2],
+                        "task_text": r[3],
+                        "task_outcome": r[4],
+                        "started_at": r[5],
+                        "ended_at": r[6],
+                        "duration_seconds": r[7],
+                        "complexity_points": r[8],
+                        "token_confidence": r[9],
+                        "attribution_method": r[10],
+                        "tokens": {
+                            "total": int(r[11] or 0),
+                            "claude": int(r[12] or 0),
+                            "codex": int(r[13] or 0),
+                            "prompt_completion": int(r[14] or 0),
+                            "cache": int(r[15] or 0),
+                        },
+                        "artifact": {
+                            "commit_sha": r[16],
+                            "files_changed": r[17],
+                            "insertions": r[18],
+                            "deletions": r[19],
+                        },
+                    }
+                    for r in rows
+                ],
+                "events": [
+                    {
+                        "event_type": e[0],
+                        "session_branch": e[1],
+                        "session_id": e[2],
+                        "conversation_id": e[3],
+                        "worker_branch": e[4],
+                        "status": e[5],
+                        "task_text": e[6],
+                        "complexity_points": e[7],
+                        "task_outcome": e[8],
+                        "timestamp": e[9],
+                    }
+                    for e in evts
+                ],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cutoff_from_args(args: argparse.Namespace) -> float:
+    """Return epoch-seconds cutoff from --since or --window-days (whichever is set)."""
+    since = getattr(args, "since", None)
+    if since:
+        import datetime as _dt
+        try:
+            d = _dt.date.fromisoformat(since)
+            return _dt.datetime(d.year, d.month, d.day, tzinfo=_dt.timezone.utc).timestamp()
+        except ValueError:
+            raise SystemExit(f"--since: invalid date format '{since}', expected YYYY-MM-DD")
+    return time.time() - (args.window_days * 86400)
+
+
+def cmd_trend(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    cutoff = _cutoff_from_args(args)
+
+    rows = conn.execute(
+        """
+        SELECT
+          date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
+          COUNT(*) AS tasks,
+          COALESCE(SUM(tokens_total), 0) AS tokens_total,
+          COALESCE(AVG(duration_seconds), 0) AS avg_duration_s,
+          COALESCE(SUM(insertions + deletions), 0) AS loc_changed
+        FROM v_task_kpi
+        WHERE repo = ? AND COALESCE(ended_at, started_at) >= ?
+        GROUP BY day
+        ORDER BY day ASC
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    days = [
+        {
+            "day": r[0],
+            "tasks": int(r[1]),
+            "tokens_total": int(r[2]),
+            "avg_duration_s": round(float(r[3] or 0.0), 2),
+            "loc_changed": int(r[4]),
+        }
+        for r in rows
+    ]
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": getattr(args, "window_days", 30),
+                "since": getattr(args, "since", None),
+                "days": days,
+                "total_tasks": sum(d["tasks"] for d in days),
+                "total_tokens": sum(d["tokens_total"] for d in days),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_hotspots(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    cutoff = _cutoff_from_args(args)
+
+    rows = conn.execute(
+        """
+        SELECT provider, tool_name, COUNT(*) AS calls
+        FROM tool_calls
+        WHERE repo = ? AND timestamp >= ?
+        GROUP BY provider, tool_name
+        ORDER BY calls DESC
+        LIMIT ?
+        """,
+        (repo, cutoff, args.limit),
+    ).fetchall()
+
+    per_tool: list[dict[str, Any]] = []
+    for provider, tool_name, calls in rows:
+        tokens = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_create_tokens), 0)
+            FROM usage_events u
+            JOIN tool_calls t
+              ON t.repo = u.repo
+             AND t.provider = u.provider
+             AND IFNULL(t.message_uuid, '') = IFNULL(u.message_uuid, '')
+             AND IFNULL(t.session_id, '') = IFNULL(u.session_id, '')
+            WHERE u.repo = ? AND t.provider = ? AND t.tool_name = ? AND u.timestamp >= ?
+            """,
+            (repo, provider, tool_name, cutoff),
+        ).fetchone()[0]
+
+        per_tool.append(
+            {
+                "provider": provider,
+                "tool_name": tool_name,
+                "calls": int(calls),
+                "estimated_tokens": int(tokens or 0),
+                "avg_tokens_per_call": round((tokens / calls), 2) if calls else 0,
+            }
+        )
+
+    warn = [t for t in per_tool if t["avg_tokens_per_call"] > args.warn_avg_tokens]
+    print(
+        json.dumps(
+            {
+                "repo": repo,
+                "window_days": args.window_days,
+                "hotspots": per_tool,
+                "soft_warnings": warn,
+                "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def cmd_export_jsonl(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        for row in conn.execute(
+            """
+            SELECT repo, provider, raw_source, session_id, conversation_id, branch, message_uuid, timestamp, model,
+                   input_tokens, output_tokens, cache_read_tokens, cache_create_tokens
+            FROM usage_events
+            WHERE repo = ?
+            ORDER BY timestamp ASC
+            """,
+            (repo,),
+        ):
+            record = {
+                "repo": row[0],
+                "provider": row[1],
+                "raw_source": row[2],
+                "session_id": row[3],
+                "conversation_id": row[4],
+                "branch": row[5],
+                "message_uuid": row[6],
+                "timestamp": row[7],
+                "model": row[8],
+                "input_tokens": row[9],
+                "output_tokens": row[10],
+                "cache_read_tokens": row[11],
+                "cache_create_tokens": row[12],
+            }
+            fh.write(json.dumps(record) + "\n")
+    print(json.dumps({"repo": repo, "out": args.out}, indent=2))
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    rows = _rows_for_dataset(conn, repo, args.dataset, args.window_days)
+    _emit_dataset(rows, args.format, args.out)
+    if args.out:
+        print(json.dumps({"repo": repo, "dataset": args.dataset, "format": args.format, "out": args.out}, indent=2))
+    return 0
+
+
+def cmd_weekly_summary(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    conn = _open_db(db_path(repo), "read")
+    cutoff = time.time() - (args.window_days * 86400)
+
+    row = conn.execute(
+        """
+        SELECT
+          COALESCE(SUM(tokens_total), 0),
+          COALESCE(SUM(tokens_claude), 0),
+          COALESCE(SUM(tokens_codex), 0),
+          COALESCE(SUM(tokens_prompt_completion), 0),
+          COALESCE(SUM(tokens_cache), 0),
+          COUNT(*)
+        FROM task_runs
+        WHERE repo = ? AND started_at >= ?
+        """,
+        (repo, cutoff),
+    ).fetchone()
+
+    total = int(row[0] or 0)
+    claude = int(row[1] or 0)
+    codex = int(row[2] or 0)
+    prompt_completion = int(row[3] or 0)
+    cache = int(row[4] or 0)
+    task_count = int(row[5] or 0)
+    kpi = round(total / task_count, 2) if task_count else None
+
+    hotspots = conn.execute(
+        """
+        SELECT provider, tool_name, COUNT(*) AS calls
+        FROM tool_calls
+        WHERE repo = ? AND timestamp >= ?
+        GROUP BY provider, tool_name
+        ORDER BY calls DESC
+        LIMIT 8
+        """,
+        (repo, cutoff),
+    ).fetchall()
+
+    trends = _compute_trends(conn, repo, args.window_days)
+
+    lines = [
+        "# Weekly Agent Telemetry",
+        "",
+        f"- Window days: {args.window_days}",
+        f"- Task runs: {task_count}",
+        f"- Total tokens: {total}",
+        f"- Claude tokens: {claude}",
+        f"- Codex tokens: {codex}",
+        f"- Prompt+completion tokens: {prompt_completion}",
+        f"- Cache tokens: {cache}",
+        f"- KPI tokens per task run: {kpi}",
+        f"- Token trend direction: {trends['slopes']['direction_tokens_per_task']}",
+        "",
+        "## Top Tool Candidates",
+        "",
+    ]
+    for provider, name, calls in hotspots:
+        lines.append(f"- [{provider}] {name}: {int(calls)} calls")
+    lines.extend(
+        [
+            "",
+            "## Suggested Allowlist Tightenings",
+            "",
+            "- Move high-output scans to planner-only execution.",
+            "- Prefer targeted file reads over broad glob scans.",
+            "- Keep worker Bash commands bounded to changed-scope checks.",
+            "",
+        ]
+    )
+
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    print(json.dumps({"repo": repo, "out": args.out}, indent=2))
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agent-telemetry")
+    sp = p.add_subparsers(dest="cmd", required=True)
+
+    p_ingest = sp.add_parser("ingest", help="Incremental ingest using per-source checkpoints.")
+    p_ingest.add_argument("--repo", default=".")
+    p_ingest.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_ingest.add_argument("--codex-home", default=os.path.expanduser("~/.codex"))
+    p_ingest.add_argument(
+        "--events",
+        default=".claude/agent-events.jsonl",
+        help="repo-relative or absolute path to orchestrator event log",
+    )
+    p_ingest.set_defaults(
+        func=lambda a: cmd_ingest(
+            argparse.Namespace(
+                repo=a.repo,
+                claude_home=a.claude_home,
+                codex_home=a.codex_home,
+                events=a.events if os.path.isabs(a.events) else os.path.join(repo_root(a.repo), a.events),
+            )
+        )
+    )
+
+    p_rebuild = sp.add_parser("rebuild", help="Maintenance command: reset repo telemetry and rebuild from sources.")
+    p_rebuild.add_argument("--repo", default=".")
+    p_rebuild.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_rebuild.add_argument("--codex-home", default=os.path.expanduser("~/.codex"))
+    p_rebuild.add_argument(
+        "--events",
+        default=".claude/agent-events.jsonl",
+        help="repo-relative or absolute path to orchestrator event log",
+    )
+    p_rebuild.set_defaults(
+        func=lambda a: cmd_rebuild(
+            argparse.Namespace(
+                repo=a.repo,
+                claude_home=a.claude_home,
+                codex_home=a.codex_home,
+                events=a.events if os.path.isabs(a.events) else os.path.join(repo_root(a.repo), a.events),
+            )
+        )
+    )
+
+    p_report = sp.add_parser("report")
+    p_report.add_argument("--repo", default=".")
+    p_report.add_argument("--window-days", type=int, default=7)
+    p_report.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    p_report.set_defaults(func=cmd_report)
+
+    p_task = sp.add_parser("task")
+    p_task.add_argument("task_id")
+    p_task.add_argument("--repo", default=".")
+    p_task.set_defaults(func=cmd_task)
+
+    p_hot = sp.add_parser("hotspots")
+    p_hot.add_argument("--repo", default=".")
+    p_hot.add_argument("--window-days", type=int, default=7)
+    p_hot.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    p_hot.add_argument("--limit", type=int, default=12)
+    p_hot.add_argument("--warn-avg-tokens", type=int, default=25000)
+    p_hot.set_defaults(func=cmd_hotspots)
+
+    p_trend = sp.add_parser("trend", help="Show day-by-day telemetry trends from v_trends view.")
+    p_trend.add_argument("--repo", default=".")
+    p_trend.add_argument("--window-days", type=int, default=30)
+    p_trend.add_argument("--since", default=None, metavar="YYYY-MM-DD")
+    p_trend.set_defaults(func=cmd_trend)
+
+    p_exp = sp.add_parser("export-jsonl")
+    p_exp.add_argument("--repo", default=".")
+    p_exp.add_argument("--out", required=True)
+    p_exp.set_defaults(func=cmd_export_jsonl)
+
+    p_export = sp.add_parser("export")
+    p_export.add_argument("--repo", default=".")
+    p_export.add_argument("--window-days", type=int, default=30)
+    p_export.add_argument("--dataset", choices=["task_kpi", "trends", "build_log"], required=True)
+    p_export.add_argument("--format", choices=["json", "csv"], default="json")
+    p_export.add_argument("--out")
+    p_export.set_defaults(func=cmd_export)
+
+    p_weekly = sp.add_parser("weekly-summary")
+    p_weekly.add_argument("--repo", default=".")
+    p_weekly.add_argument("--window-days", type=int, default=7)
+    p_weekly.add_argument("--out", default=".claude/telemetry-weekly.md")
+    p_weekly.set_defaults(
+        func=lambda a: cmd_weekly_summary(
+            argparse.Namespace(
+                repo=a.repo,
+                window_days=a.window_days,
+                out=a.out if os.path.isabs(a.out) else os.path.join(repo_root(a.repo), a.out),
+            )
+        )
+    )
+    return p
+
+
+def main() -> int:
+    args = parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

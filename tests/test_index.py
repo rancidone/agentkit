@@ -1,29 +1,14 @@
-"""Unit tests for agent-index internal functions."""
+"""Unit tests for the importable agent index backend."""
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
 import os
 import pathlib
 import sqlite3
-import sys
 import tempfile
 import time
-import types
 import unittest
 
-REPO_ROOT = pathlib.Path(__file__).parent.parent
-
-# Load agent-index as a module (extensionless script — use SourceFileLoader directly)
-_loader = importlib.machinery.SourceFileLoader("agent_index", str(REPO_ROOT / "agent-index"))
-_mod = types.ModuleType("agent_index")
-_loader.exec_module(_mod)
-
-_tokenize = _mod._tokenize
-_score_candidates = _mod._score_candidates
-parse_tasks_from_todo = _mod.parse_tasks_from_todo
-open_db = _mod.open_db
-db_path = _mod.db_path
+from agent_index_backend import _score_candidates, _tokenize, db_path, open_db, parse_tasks_from_todo
 
 
 def _make_index_db(tmp_dir: str, repo: str) -> sqlite3.Connection:
