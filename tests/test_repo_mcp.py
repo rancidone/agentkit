@@ -195,6 +195,43 @@ class TestRepoMcpServer(unittest.TestCase):
         mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
         self.assertEqual(mcp_data, cli_data)
 
+    def test_mcp_pack_has_no_file_output_side_effect(self):
+        out_path = self.tmp / "pack.json"
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "agent-index"), "build", "--repo", str(self.repo)],
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "index.pack",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task": "test task one",
+                                "out": str(out_path),
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+        subprocess.run(
+            [sys.executable, AGENTKIT_REPO_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        self.assertFalse(out_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

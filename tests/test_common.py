@@ -1,8 +1,9 @@
 """Unit tests for agentkit_common helper functions."""
 import json
 import os
-import sys
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -231,6 +232,45 @@ class TestStateAndConfigDefaults(unittest.TestCase):
             (repo / "agentkit.json").write_text(json.dumps({"context": {"default_token_budget": 123}}))
             cfg = load_repo_config(str(repo))
             self.assertEqual(cfg["context"]["default_token_budget"], 123)
+
+
+class TestIndexCliSeparation(unittest.TestCase):
+    def test_pack_out_writes_only_via_cli_module(self):
+        repo_root = pathlib.Path(__file__).parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "TODO.md").write_text("# TODO\n\n## Phase 1\n\n- [ ] test task one\n", encoding="utf-8")
+            (repo / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+            state_dir = pathlib.Path(tmp) / "state"
+            state_dir.mkdir()
+            env = {**os.environ, "AGENTKIT_STATE_DIR": str(state_dir)}
+
+            subprocess.run(
+                [sys.executable, str(repo_root / "agent-index"), "build", "--repo", str(repo)],
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            out_path = pathlib.Path(tmp) / "nested" / "pack.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(repo_root / "agent-index"),
+                    "pack",
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "test task one",
+                    "--out",
+                    str(out_path),
+                ],
+                capture_output=True,
+                check=True,
+                env=env,
+            )
+            self.assertTrue(out_path.exists())
+            self.assertIn("selected_files", json.loads(out_path.read_text(encoding="utf-8")))
 
 
 class TestAdapterTrustGate(unittest.TestCase):
