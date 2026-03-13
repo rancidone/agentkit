@@ -43,7 +43,7 @@
 - [x] Retire Claude command markdown as a supported interface
 - [x] Rework agentkit skills so skills are the only user-facing orchestration layer
 - [x] Update the Codex skill and add or align Claude-side skill packaging so both clients orchestrate the same MCP-backed workflow semantics
-- [ ] Rewrite workflow logic so skills call MCP tools instead of local wrapper scripts for:
+- [x] Rewrite workflow logic so skills call MCP tools instead of local wrapper scripts for:
   `start-todo`
   `next`
   `check`

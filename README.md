@@ -206,13 +206,14 @@ printf '%s\n' "feat: phase 7 build pipeline" "" "- Add build-all.sh and docs upd
 
 An installable Codex skill is included at `skills/agentkit-todo-codex`.
 This skill is the supported user-facing orchestration entrypoint for the TODO workflow in Codex.
-It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and uses strict `agent-*` wrappers (no shell composition).
+It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and now treats MCP tools as the primary repo, telemetry, and task lifecycle interface.
 The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
 
 A parallel Claude-side skill package now lives at `skills/agentkit-todo-claude`.
 It carries the same workflow semantics so Codex and Claude can converge on one skills-first orchestration contract during the MCP migration.
+The shared MCP-backed workflow reference lives at `skills/shared/agentkit_todo_mcp_workflow.md`, and both skills use MCP tools first for repo, telemetry, and task lifecycle operations.
 
 Install the backend tools plus the supported Codex and Claude skill packages globally:
 
