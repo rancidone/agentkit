@@ -1,16 +1,232 @@
 #!/usr/bin/env python3
-"""Bootstrap entrypoint for the telemetry-facing MCP service split."""
+"""Telemetry-facing MCP stdio server."""
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+from typing import Any
 
+from agent_telemetry_backend import (
+    append_event,
+    hotspots_telemetry,
+    ingest_telemetry,
+    inspect_telemetry,
+    report_telemetry,
+    trend_telemetry,
+)
+from agentkit_common import repo_root
 from agentkit_mcp import describe_service
+from agentkit_mcp_server import ToolDefinition, run_stdio_server
 
 
-def main() -> int:
-    print(json.dumps(describe_service("agentkit-telemetry-mcp"), indent=2))
-    return 0
+def _events_path(repo: str, arguments: dict[str, Any]) -> str:
+    events = str(arguments.get("events", ".claude/agent-events.jsonl"))
+    return events if os.path.isabs(events) else os.path.join(repo, events)
+
+
+def _task_event(arguments: dict[str, Any], event_type: str, status: str | None = None) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    fields = {
+        "repo": repo,
+        "task_id": arguments.get("task_id"),
+        "session_branch": arguments.get("session_branch"),
+        "task_text": arguments.get("task_text"),
+        "complexity_points": arguments.get("complexity_points"),
+        "status": arguments.get("status", status),
+    }
+    return append_event(_events_path(repo, arguments), event_type, fields)
+
+
+def _handle_ingest(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return ingest_telemetry(
+        repo,
+        str(arguments.get("claude_home", os.path.expanduser("~/.claude"))),
+        str(arguments.get("codex_home", os.path.expanduser("~/.codex"))),
+        _events_path(repo, arguments),
+    )
+
+
+def _handle_report(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return report_telemetry(repo, int(arguments.get("window_days", 7)), arguments.get("since"))
+
+
+def _handle_hotspots(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return hotspots_telemetry(
+        repo,
+        int(arguments.get("window_days", 7)),
+        arguments.get("since"),
+        int(arguments.get("limit", 12)),
+        int(arguments.get("warn_avg_tokens", 25000)),
+    )
+
+
+def _handle_trend(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return trend_telemetry(repo, int(arguments.get("window_days", 30)), arguments.get("since"))
+
+
+def _handle_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return inspect_telemetry(repo)
+
+
+def _tools() -> list[ToolDefinition]:
+    return [
+        ToolDefinition(
+            "telemetry.ingest",
+            "Ingest usage logs and task events into telemetry state.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "claude_home": {"type": "string"},
+                    "codex_home": {"type": "string"},
+                    "events": {"type": "string"},
+                },
+            },
+            _handle_ingest,
+        ),
+        ToolDefinition(
+            "telemetry.report",
+            "Return telemetry summary metrics for a repo.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "window_days": {"type": "integer"},
+                    "since": {"type": "string"},
+                },
+            },
+            _handle_report,
+        ),
+        ToolDefinition(
+            "telemetry.hotspots",
+            "Return tool hotspots and token warnings.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "window_days": {"type": "integer"},
+                    "since": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "warn_avg_tokens": {"type": "integer"},
+                },
+            },
+            _handle_hotspots,
+        ),
+        ToolDefinition(
+            "telemetry.trend",
+            "Return day-by-day telemetry trend points.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "window_days": {"type": "integer"},
+                    "since": {"type": "string"},
+                },
+            },
+            _handle_trend,
+        ),
+        ToolDefinition(
+            "telemetry.inspect",
+            "Inspect telemetry DB counts and ingest checkpoints.",
+            {"type": "object", "properties": {"repo": {"type": "string"}}},
+            _handle_inspect,
+        ),
+        ToolDefinition(
+            "task.log_started",
+            "Append a task_started event to the repo event log.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "session_branch": {"type": "string"},
+                    "task_text": {"type": "string"},
+                    "complexity_points": {"type": "integer"},
+                    "events": {"type": "string"},
+                },
+            },
+            lambda arguments: _task_event(arguments, "task_started"),
+        ),
+        ToolDefinition(
+            "task.log_completed",
+            "Append a task_completed event to the repo event log.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "session_branch": {"type": "string"},
+                    "events": {"type": "string"},
+                },
+            },
+            lambda arguments: _task_event(arguments, "task_completed"),
+        ),
+        ToolDefinition(
+            "task.log_failed",
+            "Append a task_failed event to the repo event log.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "session_branch": {"type": "string"},
+                    "status": {"type": "string"},
+                    "events": {"type": "string"},
+                },
+            },
+            lambda arguments: _task_event(arguments, "task_failed", "failed"),
+        ),
+        ToolDefinition(
+            "task.log_worker_spawned",
+            "Append a worker_spawned event to the repo event log.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "session_branch": {"type": "string"},
+                    "events": {"type": "string"},
+                },
+            },
+            lambda arguments: _task_event(arguments, "worker_spawned"),
+        ),
+        ToolDefinition(
+            "task.log_worker_merged",
+            "Append a worker_merged event to the repo event log.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "session_branch": {"type": "string"},
+                    "status": {"type": "string"},
+                    "events": {"type": "string"},
+                },
+            },
+            lambda arguments: _task_event(arguments, "worker_merged", "merged"),
+        ),
+    ]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the agentkit telemetry MCP server.")
+    parser.add_argument("--describe", action="store_true", default=False)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.describe:
+        print(json.dumps(describe_service("agentkit-telemetry-mcp"), indent=2))
+        return 0
+    return run_stdio_server("agentkit-telemetry-mcp", "0.1.0", _tools())
 
 
 if __name__ == "__main__":

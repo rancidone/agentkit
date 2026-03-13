@@ -1393,46 +1393,45 @@ def _recompute_derived_tables(conn: sqlite3.Connection, repo: str) -> int:
     return run_count
 
 
-def cmd_ingest(args: argparse.Namespace) -> int:
-    repo = repo_root(args.repo)
+def ingest_telemetry(repo: str, claude_home: str, codex_home: str, events: str) -> dict[str, Any]:
     with writer_lease(repo):
         conn = _open_db(db_path(repo), "write")
 
         def _txn() -> tuple[dict[str, int], dict[str, int], int, int]:
-            claude_stats = ingest_usage_provider(conn, repo, args.claude_home, "claude")
-            codex_stats = ingest_usage_provider(conn, repo, args.codex_home, "codex")
-            task_stats = ingest_task_events(conn, repo, args.events)
+            claude_stats = ingest_usage_provider(conn, repo, claude_home, "claude")
+            codex_stats = ingest_usage_provider(conn, repo, codex_home, "codex")
+            task_stats = ingest_task_events(conn, repo, events)
             run_count = _recompute_derived_tables(conn, repo)
             return claude_stats, codex_stats, task_stats, run_count
 
         claude_stats, codex_stats, task_stats, run_count = _run_write_transaction(conn, _txn)
         conn.close()
 
-    print(
-        json.dumps(
-            {
-                "repo": repo,
-                "usage_events_ingested": claude_stats["usage_events"] + codex_stats["usage_events"],
-                "usage_events_by_provider": {
-                    "claude": claude_stats["usage_events"],
-                    "codex": codex_stats["usage_events"],
-                },
-                "tool_calls_ingested": claude_stats["tool_calls"] + codex_stats["tool_calls"],
-                "tool_calls_by_provider": {
-                    "claude": claude_stats["tool_calls"],
-                    "codex": codex_stats["tool_calls"],
-                },
-                "task_events_ingested": task_stats,
-                "task_runs_built": run_count,
-                "incremental": True,
-                "files_scanned_by_provider": {
-                    "claude": claude_stats.get("files_scanned", 0),
-                    "codex": codex_stats.get("files_scanned", 0),
-                },
-            },
-            indent=2,
-        )
-    )
+    return {
+        "repo": repo,
+        "usage_events_ingested": claude_stats["usage_events"] + codex_stats["usage_events"],
+        "usage_events_by_provider": {
+            "claude": claude_stats["usage_events"],
+            "codex": codex_stats["usage_events"],
+        },
+        "tool_calls_ingested": claude_stats["tool_calls"] + codex_stats["tool_calls"],
+        "tool_calls_by_provider": {
+            "claude": claude_stats["tool_calls"],
+            "codex": codex_stats["tool_calls"],
+        },
+        "task_events_ingested": task_stats,
+        "task_runs_built": run_count,
+        "incremental": True,
+        "files_scanned_by_provider": {
+            "claude": claude_stats.get("files_scanned", 0),
+            "codex": codex_stats.get("files_scanned", 0),
+        },
+    }
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    print(json.dumps(ingest_telemetry(repo, args.claude_home, args.codex_home, args.events), indent=2))
     return 0
 
 
@@ -1485,8 +1484,13 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
+    print(json.dumps(report_telemetry(repo, args.window_days, getattr(args, "since", None)), indent=2))
+    return 0
+
+
+def report_telemetry(repo: str, window_days: int, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    cutoff = _cutoff_from_args(args)
+    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     completed = conn.execute(
         """
@@ -1524,7 +1528,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         (repo, cutoff),
     ).fetchall()
 
-    trends = _compute_trends(conn, repo, args.window_days)
+    trends = _compute_trends(conn, repo, window_days)
 
     task_sample = conn.execute(
         """
@@ -1543,51 +1547,50 @@ def cmd_report(args: argparse.Namespace) -> int:
         mean_dur = round(sum(durs) / len(durs), 2) if durs else None
     trend_dir = trends["slopes"].get("direction_tokens_per_task", "flat")
 
-    print(
-        json.dumps(
+    return {
+        "repo": repo,
+        "window_days": window_days,
+        "since": since,
+        "completed_tasks": int(completed),
+        "tokens": {
+            "total": grand,
+            "claude": int(totals[1] or 0),
+            "codex": int(totals[2] or 0),
+            "prompt_completion": int(totals[3] or 0),
+            "cache": int(totals[4] or 0),
+        },
+        "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
+        "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
+        "trend": trends["slopes"],
+        "velocity_summary": {
+            "tasks_in_window": int(completed),
+            "total_tokens": grand,
+            "mean_duration_seconds": mean_dur,
+            "trend_direction": trend_dir,
+        },
+        "recent_task_samples": [
             {
-                "repo": repo,
-                "window_days": args.window_days,
-                "since": getattr(args, "since", None),
-                "completed_tasks": int(completed),
-                "tokens": {
-                    "total": grand,
-                    "claude": int(totals[1] or 0),
-                    "codex": int(totals[2] or 0),
-                    "prompt_completion": int(totals[3] or 0),
-                    "cache": int(totals[4] or 0),
-                },
-                "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
-                "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
-                "trend": trends["slopes"],
-                "velocity_summary": {
-                    "tasks_in_window": int(completed),
-                    "total_tokens": grand,
-                    "mean_duration_seconds": mean_dur,
-                    "trend_direction": trend_dir,
-                },
-                "recent_task_samples": [
-                    {
-                        "task_id": r[0],
-                        "session_branch": r[1],
-                        "task_text": r[2],
-                        "tokens_claude": int(r[3] or 0),
-                        "tokens_codex": int(r[4] or 0),
-                        "duration_seconds": round(float(r[5] or 0.0), 2),
-                        "complexity_points": r[6],
-                        "task_outcome": r[7],
-                    }
-                    for r in task_sample
-                ],
-            },
-            indent=2,
-        )
-    )
-    return 0
+                "task_id": r[0],
+                "session_branch": r[1],
+                "task_text": r[2],
+                "tokens_claude": int(r[3] or 0),
+                "tokens_codex": int(r[4] or 0),
+                "duration_seconds": round(float(r[5] or 0.0), 2),
+                "complexity_points": r[6],
+                "task_outcome": r[7],
+            }
+            for r in task_sample
+        ],
+    }
 
 
 def cmd_task(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
+    print(json.dumps(task_run_details(repo, args.task_id), indent=2))
+    return 0
+
+
+def task_run_details(repo: str, task_id: str) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
     rows = conn.execute(
         """
@@ -1602,10 +1605,10 @@ def cmd_task(args: argparse.Namespace) -> int:
         WHERE repo = ? AND task_id = ?
         ORDER BY started_at ASC
         """,
-        (repo, args.task_id),
+        (repo, task_id),
     ).fetchall()
     if not rows:
-        raise SystemExit(f"no task run found for task_id={args.task_id}")
+        raise SystemExit(f"no task run found for task_id={task_id}")
 
     evts = conn.execute(
         """
@@ -1615,63 +1618,56 @@ def cmd_task(args: argparse.Namespace) -> int:
         WHERE repo = ? AND task_id = ?
         ORDER BY timestamp ASC
         """,
-        (repo, args.task_id),
+        (repo, task_id),
     ).fetchall()
-
-    print(
-        json.dumps(
+    return {
+        "repo": repo,
+        "task_id": task_id,
+        "runs": [
             {
-                "repo": repo,
-                "task_id": args.task_id,
-                "runs": [
-                    {
-                        "run_id": r[0],
-                        "task_id": r[1],
-                        "session_branch": r[2],
-                        "task_text": r[3],
-                        "task_outcome": r[4],
-                        "started_at": r[5],
-                        "ended_at": r[6],
-                        "duration_seconds": r[7],
-                        "complexity_points": r[8],
-                        "token_confidence": r[9],
-                        "attribution_method": r[10],
-                        "tokens": {
-                            "total": int(r[11] or 0),
-                            "claude": int(r[12] or 0),
-                            "codex": int(r[13] or 0),
-                            "prompt_completion": int(r[14] or 0),
-                            "cache": int(r[15] or 0),
-                        },
-                        "artifact": {
-                            "commit_sha": r[16],
-                            "files_changed": r[17],
-                            "insertions": r[18],
-                            "deletions": r[19],
-                        },
-                    }
-                    for r in rows
-                ],
-                "events": [
-                    {
-                        "event_type": e[0],
-                        "session_branch": e[1],
-                        "session_id": e[2],
-                        "conversation_id": e[3],
-                        "worker_branch": e[4],
-                        "status": e[5],
-                        "task_text": e[6],
-                        "complexity_points": e[7],
-                        "task_outcome": e[8],
-                        "timestamp": e[9],
-                    }
-                    for e in evts
-                ],
-            },
-            indent=2,
-        )
-    )
-    return 0
+                "run_id": r[0],
+                "task_id": r[1],
+                "session_branch": r[2],
+                "task_text": r[3],
+                "task_outcome": r[4],
+                "started_at": r[5],
+                "ended_at": r[6],
+                "duration_seconds": r[7],
+                "complexity_points": r[8],
+                "token_confidence": r[9],
+                "attribution_method": r[10],
+                "tokens": {
+                    "total": int(r[11] or 0),
+                    "claude": int(r[12] or 0),
+                    "codex": int(r[13] or 0),
+                    "prompt_completion": int(r[14] or 0),
+                    "cache": int(r[15] or 0),
+                },
+                "artifact": {
+                    "commit_sha": r[16],
+                    "files_changed": r[17],
+                    "insertions": r[18],
+                    "deletions": r[19],
+                },
+            }
+            for r in rows
+        ],
+        "events": [
+            {
+                "event_type": e[0],
+                "session_branch": e[1],
+                "session_id": e[2],
+                "conversation_id": e[3],
+                "worker_branch": e[4],
+                "status": e[5],
+                "task_text": e[6],
+                "complexity_points": e[7],
+                "task_outcome": e[8],
+                "timestamp": e[9],
+            }
+            for e in evts
+        ],
+    }
 
 
 def _cutoff_from_args(args: argparse.Namespace) -> float:
@@ -1689,8 +1685,13 @@ def _cutoff_from_args(args: argparse.Namespace) -> float:
 
 def cmd_trend(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
+    print(json.dumps(trend_telemetry(repo, getattr(args, "window_days", 30), getattr(args, "since", None)), indent=2))
+    return 0
+
+
+def trend_telemetry(repo: str, window_days: int = 30, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    cutoff = _cutoff_from_args(args)
+    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     rows = conn.execute(
         """
@@ -1718,26 +1719,42 @@ def cmd_trend(args: argparse.Namespace) -> int:
         }
         for r in rows
     ]
+    return {
+        "repo": repo,
+        "window_days": window_days,
+        "since": since,
+        "days": days,
+        "total_tasks": sum(d["tasks"] for d in days),
+        "total_tokens": sum(d["tokens_total"] for d in days),
+    }
+
+
+def cmd_hotspots(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
     print(
         json.dumps(
-            {
-                "repo": repo,
-                "window_days": getattr(args, "window_days", 30),
-                "since": getattr(args, "since", None),
-                "days": days,
-                "total_tasks": sum(d["tasks"] for d in days),
-                "total_tokens": sum(d["tokens_total"] for d in days),
-            },
+            hotspots_telemetry(
+                repo,
+                args.window_days,
+                getattr(args, "since", None),
+                args.limit,
+                args.warn_avg_tokens,
+            ),
             indent=2,
         )
     )
     return 0
 
 
-def cmd_hotspots(args: argparse.Namespace) -> int:
-    repo = repo_root(args.repo)
+def hotspots_telemetry(
+    repo: str,
+    window_days: int = 7,
+    since: str | None = None,
+    limit: int = 12,
+    warn_avg_tokens: int = 25000,
+) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    cutoff = _cutoff_from_args(args)
+    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     rows = conn.execute(
         """
@@ -1748,7 +1765,7 @@ def cmd_hotspots(args: argparse.Namespace) -> int:
         ORDER BY calls DESC
         LIMIT ?
         """,
-        (repo, cutoff, args.limit),
+        (repo, cutoff, limit),
     ).fetchall()
 
     per_tool: list[dict[str, Any]] = []
@@ -1778,20 +1795,66 @@ def cmd_hotspots(args: argparse.Namespace) -> int:
             }
         )
 
-    warn = [t for t in per_tool if t["avg_tokens_per_call"] > args.warn_avg_tokens]
-    print(
-        json.dumps(
-            {
-                "repo": repo,
-                "window_days": args.window_days,
-                "hotspots": per_tool,
-                "soft_warnings": warn,
-                "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
-            },
-            indent=2,
-        )
-    )
-    return 0
+    warn = [t for t in per_tool if t["avg_tokens_per_call"] > warn_avg_tokens]
+    return {
+        "repo": repo,
+        "window_days": window_days,
+        "since": since,
+        "hotspots": per_tool,
+        "soft_warnings": warn,
+        "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
+    }
+
+
+def inspect_telemetry(repo: str) -> dict[str, Any]:
+    conn = _open_db(db_path(repo), "read")
+    counts = {
+        "usage_events": conn.execute("SELECT COUNT(*) FROM usage_events WHERE repo = ?", (repo,)).fetchone()[0],
+        "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls WHERE repo = ?", (repo,)).fetchone()[0],
+        "task_events": conn.execute("SELECT COUNT(*) FROM task_events WHERE repo = ?", (repo,)).fetchone()[0],
+        "task_runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE repo = ?", (repo,)).fetchone()[0],
+        "task_artifacts": conn.execute("SELECT COUNT(*) FROM task_artifacts WHERE repo = ?", (repo,)).fetchone()[0],
+    }
+    checkpoints = [
+        {
+            "source_key": row[0],
+            "cursor": row[1],
+            "file_inode": row[2],
+            "file_size": row[3],
+            "file_mtime": row[4],
+            "updated_at": row[5],
+        }
+        for row in conn.execute(
+            """
+            SELECT source_key, cursor, file_inode, file_size, file_mtime, updated_at
+            FROM ingest_checkpoints
+            WHERE repo = ?
+            ORDER BY source_key ASC
+            """,
+            (repo,),
+        ).fetchall()
+    ]
+    return {
+        "repo": repo,
+        "db_path": db_path(repo),
+        "counts": counts,
+        "checkpoints": checkpoints,
+    }
+
+
+def append_event(events_path: str, event_type: str, fields: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "event_type": event_type,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = str(value)
+    events_dir = os.path.dirname(events_path) or "."
+    os.makedirs(events_dir, exist_ok=True)
+    with open(events_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload
 
 
 def cmd_export_jsonl(args: argparse.Namespace) -> int:

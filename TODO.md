@@ -23,7 +23,7 @@
   `index.query`
   `index.pack`
   `index.inspect`
-- [ ] Implement `agentkit-telemetry-mcp` stdio server with these tools:
+- [x] Implement `agentkit-telemetry-mcp` stdio server with these tools:
   `telemetry.ingest`
   `telemetry.report`
   `telemetry.hotspots`

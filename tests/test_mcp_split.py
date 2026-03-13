@@ -60,7 +60,7 @@ class TestServiceEntrypoints(unittest.TestCase):
 
     def test_telemetry_entrypoint_describes_telemetry_service(self):
         result = subprocess.run(
-            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            [sys.executable, AGENTKIT_TELEMETRY_MCP, "--describe"],
             capture_output=True,
             text=True,
             check=True,
