@@ -49,7 +49,7 @@ class TestServiceDefinitions(unittest.TestCase):
 class TestServiceEntrypoints(unittest.TestCase):
     def test_repo_entrypoint_describes_repo_service(self):
         result = subprocess.run(
-            [sys.executable, AGENTKIT_REPO_MCP],
+            [sys.executable, AGENTKIT_REPO_MCP, "--describe"],
             capture_output=True,
             text=True,
             check=True,

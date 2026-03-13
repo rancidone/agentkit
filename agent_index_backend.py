@@ -415,6 +415,76 @@ def search_candidates(repo: str, task_text: str, limit: int) -> dict[str, Any]:
     }
 
 
+def build_pack(repo: str, task_text: str, limit: int, token_budget: int) -> dict[str, Any]:
+    cfg = load_repo_config(repo)
+    query = search_candidates(repo, task_text, limit)
+    max_files = int(cfg.get("context", {}).get("max_files_per_pack", limit))
+
+    return {
+        "task": query["task"],
+        "context_budget_tokens": token_budget,
+        "selected_files": query["files"][:max_files],
+        "selected_snippets": query.get("snippets", []),
+        "recommended_checks": query["test_hints"],
+        "targeted_tests": query["tests"],
+        "policy": {
+            "worker_allowlist_profile": "lean-code-edit",
+            "deny_high_cost_worker_ops": True,
+            "prefer_symbol_blocks": bool(cfg.get("context", {}).get("prefer_symbol_blocks", True)),
+            "planner_required_for_discovery": True,
+            "force_task_pack_before_worker": True,
+            "worker_allowed_read_modes": ["chunk", "symbol"],
+            "max_read_chunk_lines": int(cfg.get("context", {}).get("max_read_chunk_lines", 120)),
+        },
+    }
+
+
+def inspect_index(repo: str) -> dict[str, Any]:
+    conn = open_db(db_path(repo))
+    file_counts = {
+        role: count
+        for role, count in conn.execute(
+            "SELECT role, COUNT(*) FROM files WHERE repo = ? GROUP BY role ORDER BY role ASC",
+            (repo,),
+        ).fetchall()
+    }
+    task_counts = {
+        phase: count
+        for phase, count in conn.execute(
+            "SELECT phase, COUNT(*) FROM tasks WHERE repo = ? GROUP BY phase ORDER BY phase ASC",
+            (repo,),
+        ).fetchall()
+    }
+    symbol_extractors = {
+        extractor: count
+        for extractor, count in conn.execute(
+            "SELECT extractor, COUNT(*) FROM symbols WHERE repo = ? GROUP BY extractor ORDER BY extractor ASC",
+            (repo,),
+        ).fetchall()
+    }
+    counts_row = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM files WHERE repo = ?),
+          (SELECT COUNT(*) FROM tasks WHERE repo = ?),
+          (SELECT COUNT(*) FROM symbols WHERE repo = ?)
+        """,
+        (repo, repo, repo),
+    ).fetchone()
+    return {
+        "repo": repo,
+        "db_path": db_path(repo),
+        "counts": {
+            "files": counts_row[0],
+            "tasks": counts_row[1],
+            "symbols": counts_row[2],
+        },
+        "file_counts_by_role": file_counts,
+        "task_counts_by_phase": task_counts,
+        "symbol_counts_by_extractor": symbol_extractors,
+    }
+
+
 def query_by_id(repo: str, task_id: str) -> str | None:
     conn = open_db(db_path(repo))
     row = conn.execute(
@@ -463,27 +533,7 @@ def cmd_pack(args: argparse.Namespace) -> int:
     if not task_text:
         raise SystemExit("--task or --task-id is required")
 
-    cfg = load_repo_config(repo)
-    query = search_candidates(repo, task_text, args.limit)
-    max_files = int(cfg.get("context", {}).get("max_files_per_pack", args.limit))
-
-    pack = {
-        "task": query["task"],
-        "context_budget_tokens": args.token_budget,
-        "selected_files": query["files"][:max_files],
-        "selected_snippets": query.get("snippets", []),
-        "recommended_checks": query["test_hints"],
-        "targeted_tests": query["tests"],
-        "policy": {
-            "worker_allowlist_profile": "lean-code-edit",
-            "deny_high_cost_worker_ops": True,
-            "prefer_symbol_blocks": bool(cfg.get("context", {}).get("prefer_symbol_blocks", True)),
-            "planner_required_for_discovery": True,
-            "force_task_pack_before_worker": True,
-            "worker_allowed_read_modes": ["chunk", "symbol"],
-            "max_read_chunk_lines": int(cfg.get("context", {}).get("max_read_chunk_lines", 120)),
-        },
-    }
+    pack = build_pack(repo, task_text, args.limit, args.token_budget)
     if args.out:
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as fh:

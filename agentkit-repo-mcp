@@ -1,16 +1,147 @@
 #!/usr/bin/env python3
-"""Bootstrap entrypoint for the repo-facing MCP service split."""
+"""Repo-facing MCP stdio server."""
 
 from __future__ import annotations
 
+import argparse
 import json
+from typing import Any
 
+from agent_index_backend import build_index, build_pack, inspect_index, query_by_id, search_candidates
+from agentkit_common import repo_root
 from agentkit_mcp import describe_service
+from agentkit_mcp_server import ToolDefinition, run_stdio_server
 
 
-def main() -> int:
-    print(json.dumps(describe_service("agentkit-repo-mcp"), indent=2))
-    return 0
+def _resolve_task_text(repo: str, arguments: dict[str, Any]) -> str:
+    task_text = arguments.get("task")
+    task_id = arguments.get("task_id")
+    if task_id:
+        task_text = query_by_id(repo, str(task_id))
+        if task_text is None:
+            raise SystemExit(f"task id not found: {task_id}")
+    if not task_text:
+        raise SystemExit("task or task_id is required")
+    return str(task_text)
+
+
+def _handle_build(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    mode = str(arguments.get("mode", "full"))
+    allow_custom = bool(arguments.get("allow_custom_adapters", False))
+    return build_index(repo, mode, allow_custom_adapters=allow_custom)
+
+
+def _handle_refresh(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    mode = str(arguments.get("mode", "light"))
+    allow_custom = bool(arguments.get("allow_custom_adapters", False))
+    return build_index(repo, mode, allow_custom_adapters=allow_custom)
+
+
+def _handle_query(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    task_text = _resolve_task_text(repo, arguments)
+    limit = int(arguments.get("limit", 20))
+    return search_candidates(repo, task_text, limit)
+
+
+def _handle_pack(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    task_text = _resolve_task_text(repo, arguments)
+    limit = int(arguments.get("limit", 12))
+    token_budget = int(arguments.get("token_budget", 2800))
+    return build_pack(repo, task_text, limit, token_budget)
+
+
+def _handle_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return inspect_index(repo)
+
+
+def _tools() -> list[ToolDefinition]:
+    return [
+        ToolDefinition(
+            name="index.build",
+            description="Build the repo index and task metadata.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["full", "light"]},
+                    "allow_custom_adapters": {"type": "boolean"},
+                },
+            },
+            handler=_handle_build,
+        ),
+        ToolDefinition(
+            name="index.refresh",
+            description="Refresh the repo index in light or full mode.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["light", "full"]},
+                    "allow_custom_adapters": {"type": "boolean"},
+                },
+            },
+            handler=_handle_refresh,
+        ),
+        ToolDefinition(
+            name="index.query",
+            description="Find relevant files and snippets for a task.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+            },
+            handler=_handle_query,
+        ),
+        ToolDefinition(
+            name="index.pack",
+            description="Build a task-scoped context pack without file-output side effects.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "token_budget": {"type": "integer"},
+                },
+            },
+            handler=_handle_pack,
+        ),
+        ToolDefinition(
+            name="index.inspect",
+            description="Inspect index DB paths and aggregate counts.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                },
+            },
+            handler=_handle_inspect,
+        ),
+    ]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the agentkit repo MCP server.")
+    parser.add_argument("--describe", action="store_true", default=False)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.describe:
+        print(json.dumps(describe_service("agentkit-repo-mcp"), indent=2))
+        return 0
+    return run_stdio_server("agentkit-repo-mcp", "0.1.0", _tools())
 
 
 if __name__ == "__main__":

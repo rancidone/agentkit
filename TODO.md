@@ -17,7 +17,7 @@
 
 ### Phase 2: Expose Core MCP Tool Surface
 
-- [ ] Implement `agentkit-repo-mcp` stdio server with these tools:
+- [x] Implement `agentkit-repo-mcp` stdio server with these tools:
   `index.build`
   `index.refresh`
   `index.query`
