@@ -63,7 +63,7 @@
   MCP service registration and config
   skill installation and linking
   manifest recording of every installed artifact
-- [ ] Stop installing the current `agent-*` wrapper fleet into `~/.local/bin`
+- [x] Stop installing the current `agent-*` wrapper fleet into `~/.local/bin`
 - [ ] Add `agent-uninstall` with default behavior: remove only agentkit-managed install artifacts
 - [ ] For new installs, uninstall must remove:
   installed skill artifacts

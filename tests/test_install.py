@@ -61,7 +61,7 @@ class TestAgentInstall(unittest.TestCase):
             self.assertIn("agentkit-repo-mcp", codex_payload["mcpServers"])
             self.assertIn("agentkit-telemetry-mcp", codex_payload["mcpServers"])
 
-    def test_legacy_install_shim_records_wrapper_links(self):
+    def test_legacy_wrapper_install_requires_explicit_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             codex_home = tmp_path / "codex"
@@ -76,7 +76,7 @@ class TestAgentInstall(unittest.TestCase):
             }
 
             subprocess.run(
-                [str(REPO_ROOT / "agent-install-global-tools"), str(bin_dir)],
+                [sys.executable, AGENT_INSTALL, "--repo-root", str(REPO_ROOT), "--legacy-bin-dir", str(bin_dir)],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -85,6 +85,32 @@ class TestAgentInstall(unittest.TestCase):
             manifest = json.loads((xdg_data_home / "agentkit" / "install-manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(any(artifact["type"] == "legacy_wrapper_link" for artifact in manifest["artifacts"]))
             self.assertTrue((bin_dir / "agentkit").is_symlink())
+
+    def test_deprecated_global_tools_shim_no_longer_installs_wrappers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            codex_home = tmp_path / "codex"
+            claude_home = tmp_path / "claude"
+            xdg_data_home = tmp_path / "data"
+            bin_dir = tmp_path / "bin"
+            env = {
+                **os.environ,
+                "CODEX_HOME": str(codex_home),
+                "CLAUDE_HOME": str(claude_home),
+                "XDG_DATA_HOME": str(xdg_data_home),
+            }
+
+            result = subprocess.run(
+                [str(REPO_ROOT / "agent-install-global-tools"), str(bin_dir)],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+            self.assertIn("no longer the default", result.stderr)
+            self.assertFalse((bin_dir / "agentkit").exists())
+            manifest = json.loads((xdg_data_home / "agentkit" / "install-manifest.json").read_text(encoding="utf-8"))
+            self.assertFalse(any(artifact["type"] == "legacy_wrapper_link" for artifact in manifest["artifacts"]))
 
 
 if __name__ == "__main__":

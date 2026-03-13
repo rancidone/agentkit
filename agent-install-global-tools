@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="${1:-$HOME/.local/bin}"
 
-echo "agent-install-global-tools is deprecated; using manifest-managed install plus legacy wrapper links." >&2
-exec python3 "${SCRIPT_DIR}/agent-install" --repo-root "${SCRIPT_DIR}" --legacy-bin-dir "${BIN_DIR}"
+echo "agent-install-global-tools is deprecated; wrapper symlink installation is no longer the default." >&2
+if [[ $# -gt 0 ]]; then
+  echo "Ignoring legacy bin-dir argument: $1" >&2
+fi
+exec python3 "${SCRIPT_DIR}/agent-install" --repo-root "${SCRIPT_DIR}"

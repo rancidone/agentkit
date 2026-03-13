@@ -230,13 +230,13 @@ For non-default install location:
 ./agent-install --codex-home /custom/codex --claude-home /custom/claude
 ```
 
-Legacy compatibility install:
+Optional legacy wrapper compatibility install:
 
 ```bash
-./agent-install-global-tools /custom/bin/dir
+./agent-install --legacy-bin-dir /custom/bin/dir
 ```
 
-This shim now delegates to `agent-install` and adds the legacy wrapper symlink fleet for transitional setups.
+This opt-in compatibility mode records wrapper symlinks in the manifest, but the default install flow no longer installs the `agent-*` wrapper fleet into `~/.local/bin`.
 
 Validate the Codex skill markdown, plus any retained legacy command markdown, with:
 
