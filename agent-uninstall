@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Uninstall agentkit-managed MCP configs and skill packages."""
+
+from __future__ import annotations
+
+from agentkit_install import uninstall_main
+
+
+if __name__ == "__main__":
+    raise SystemExit(uninstall_main())

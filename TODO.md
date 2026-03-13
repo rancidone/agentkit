@@ -64,21 +64,21 @@
   skill installation and linking
   manifest recording of every installed artifact
 - [x] Stop installing the current `agent-*` wrapper fleet into `~/.local/bin`
-- [ ] Add `agent-uninstall` with default behavior: remove only agentkit-managed install artifacts
-- [ ] For new installs, uninstall must remove:
+- [x] Add `agent-uninstall` with default behavior: remove only agentkit-managed install artifacts
+- [x] For new installs, uninstall must remove:
   installed skill artifacts
   agentkit-owned MCP config entries or generated config files
   any managed launch helpers
   the install manifest
-- [ ] For legacy installs, add best-effort cleanup that removes only:
+- [x] For legacy installs, add best-effort cleanup that removes only:
   historical symlinks created by `agent-install-global-tools` that still point to this repo
   the legacy Codex skill symlink if it still points to this repo
-- [ ] Default uninstall must not remove:
+- [x] Default uninstall must not remove:
   telemetry DBs
   event logs
   repo-local data
   arbitrary user-created files or copied scripts
-- [ ] Make uninstall idempotent and safe if paths moved or artifacts are already missing
+- [x] Make uninstall idempotent and safe if paths moved or artifacts are already missing
 
 ### Phase 5: Repo Migration And Dogfood Cutover
 

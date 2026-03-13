@@ -238,6 +238,16 @@ Optional legacy wrapper compatibility install:
 
 This opt-in compatibility mode records wrapper symlinks in the manifest, but the default install flow no longer installs the `agent-*` wrapper fleet into `~/.local/bin`.
 
+Remove agentkit-managed install artifacts with:
+
+```bash
+./agent-uninstall
+```
+
+Default uninstall removes the manifest-recorded skill links, managed MCP config files, and any manifest-managed legacy launch helpers.
+It also performs best-effort cleanup for historical `~/.local/bin` wrapper symlinks and the legacy Codex skill symlink, but only when those symlinks still point at this repository.
+It does not remove telemetry databases, event logs, repo-local data, copied scripts, or other arbitrary user-created files.
+
 Validate the Codex skill markdown, plus any retained legacy command markdown, with:
 
 ```bash

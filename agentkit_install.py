@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manifest-managed installer for agentkit MCP services and skills."""
+"""Manifest-managed installer and uninstaller for agentkit MCP services and skills."""
 
 from __future__ import annotations
 
@@ -39,6 +39,60 @@ def _symlink(target: Path, link_path: Path) -> None:
     if link_path.exists() or link_path.is_symlink():
         link_path.unlink()
     link_path.symlink_to(target)
+
+
+def _load_manifest(manifest_path: Path) -> dict[str, Any] | None:
+    if not manifest_path.exists():
+        return None
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _remove_path(path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    try:
+        path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def _remove_link_if_target_matches(link_path: Path, target: Path) -> bool:
+    if not link_path.is_symlink():
+        return False
+    try:
+        if link_path.resolve() != target.resolve():
+            return False
+        link_path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def legacy_wrapper_names() -> list[str]:
+    return [
+        "agent-install-global-tools",
+        "agentkit",
+        "agent-index",
+        "agent-index-refresh-light",
+        "agent-index-refresh-full",
+        "agent-telemetry",
+        "agent-telemetry-ingest",
+        "agent-telemetry-report",
+        "agent-telemetry-hotspots",
+        "agent-telemetry-strict",
+        "agent-log",
+        "agent-log-task-started",
+        "agent-log-task-complete",
+        "agent-log-task-failed",
+        "agent-log-worker-spawned",
+        "agent-log-worker-merged",
+        "agent-session-branch",
+        "agent-command-guard",
+        "agent-validate-command-docs",
+        "agent-commit-files",
+        "agent-weekly-telemetry-gate",
+    ]
 
 
 def build_managed_mcp_config(repo_root: Path) -> dict[str, Any]:
@@ -86,29 +140,7 @@ def install_agentkit(
 
     if legacy_bin_dir is not None:
         legacy_bin_dir.mkdir(parents=True, exist_ok=True)
-        tools = [
-            "agent-install-global-tools",
-            "agentkit",
-            "agent-index",
-            "agent-index-refresh-light",
-            "agent-index-refresh-full",
-            "agent-telemetry",
-            "agent-telemetry-ingest",
-            "agent-telemetry-report",
-            "agent-telemetry-hotspots",
-            "agent-telemetry-strict",
-            "agent-log",
-            "agent-log-task-started",
-            "agent-log-task-complete",
-            "agent-log-task-failed",
-            "agent-log-worker-spawned",
-            "agent-log-worker-merged",
-            "agent-session-branch",
-            "agent-command-guard",
-            "agent-validate-command-docs",
-            "agent-commit-files",
-            "agent-weekly-telemetry-gate",
-        ]
+        tools = legacy_wrapper_names()
         for tool in tools:
             target = repo_root / tool
             if not target.exists():
@@ -136,7 +168,70 @@ def install_agentkit(
     }
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def uninstall_agentkit(
+    repo_root: Path,
+    codex_home: Path,
+    legacy_bin_dir: Path | None = None,
+) -> dict[str, Any]:
+    manifest_path = install_manifest_path()
+    manifest = _load_manifest(manifest_path)
+    removed: list[str] = []
+    skipped: list[str] = []
+
+    if manifest is not None:
+        for artifact in manifest.get("artifacts", []):
+            artifact_path = Path(artifact["path"]).expanduser()
+            artifact_type = artifact.get("type")
+            if artifact_type in {"skill_link", "legacy_wrapper_link"}:
+                target = artifact.get("target")
+                if target is None:
+                    skipped.append(str(artifact_path))
+                    continue
+                if _remove_link_if_target_matches(artifact_path, Path(target).expanduser()):
+                    removed.append(str(artifact_path))
+                else:
+                    skipped.append(str(artifact_path))
+                continue
+            if artifact_type == "managed_config":
+                if _remove_path(artifact_path):
+                    removed.append(str(artifact_path))
+                else:
+                    skipped.append(str(artifact_path))
+                continue
+            skipped.append(str(artifact_path))
+
+    legacy_removed: list[str] = []
+    legacy_skipped: list[str] = []
+    legacy_skill = codex_home / "skills" / "agentkit-todo-codex"
+    if _remove_link_if_target_matches(legacy_skill, repo_root / "skills" / "agentkit-todo-codex"):
+        legacy_removed.append(str(legacy_skill))
+    elif legacy_skill.exists() or legacy_skill.is_symlink():
+        legacy_skipped.append(str(legacy_skill))
+
+    if legacy_bin_dir is not None:
+        for name in legacy_wrapper_names():
+            link_path = legacy_bin_dir / name
+            target = repo_root / name
+            if _remove_link_if_target_matches(link_path, target):
+                legacy_removed.append(str(link_path))
+            elif link_path.exists() or link_path.is_symlink():
+                legacy_skipped.append(str(link_path))
+
+    manifest_removed = _remove_path(manifest_path)
+
+    return {
+        "repo_root": str(repo_root),
+        "manifest": str(manifest_path),
+        "manifest_found": manifest is not None,
+        "manifest_removed": manifest_removed,
+        "removed": removed,
+        "skipped": skipped,
+        "legacy_removed": legacy_removed,
+        "legacy_skipped": legacy_skipped,
+    }
+
+
+def parse_install_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install agentkit MCP configs and skill links.")
     parser.add_argument("--repo-root", default=Path(__file__).resolve().parent)
     parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -145,12 +240,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_uninstall_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Uninstall agentkit-managed MCP configs and skill links.")
+    parser.add_argument("--repo-root", default=Path(__file__).resolve().parent)
+    parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    parser.add_argument("--legacy-bin-dir", default=str(Path.home() / ".local" / "bin"))
+    return parser.parse_args(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    args = parse_install_args(argv)
     result = install_agentkit(
         repo_root=Path(args.repo_root).resolve(),
         codex_home=Path(args.codex_home).expanduser(),
         claude_home=Path(args.claude_home).expanduser(),
+        legacy_bin_dir=Path(args.legacy_bin_dir).expanduser() if args.legacy_bin_dir else None,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def uninstall_main(argv: list[str] | None = None) -> int:
+    args = parse_uninstall_args(argv)
+    result = uninstall_agentkit(
+        repo_root=Path(args.repo_root).resolve(),
+        codex_home=Path(args.codex_home).expanduser(),
         legacy_bin_dir=Path(args.legacy_bin_dir).expanduser() if args.legacy_bin_dir else None,
     )
     print(json.dumps(result, indent=2))

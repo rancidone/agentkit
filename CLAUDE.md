@@ -77,6 +77,14 @@ Install the managed MCP config artifacts and both skill packages globally:
 ./agent-install
 ```
 
+Remove only agentkit-managed install artifacts with:
+```bash
+./agent-uninstall
+```
+
+Default uninstall removes manifest-managed skill links, MCP config files, and managed legacy launch helpers, plus best-effort cleanup of historical repo-owned symlinks.
+It intentionally preserves telemetry DBs, event logs, repo-local data, copied scripts, and other arbitrary user files.
+
 ## Command Safety Rules
 
 `agent-command-guard` enforces these bans in workflow commands and command docs:
