@@ -210,6 +210,7 @@ It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, 
 The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
+The MCP-first skill flow preserves the repo's current self-dogfooding semantics: tasks-first stays the default, task lifecycle logging remains available for repo self-use, and index/telemetry refresh steps remain part of TODO execution.
 
 A parallel Claude-side skill package now lives at `skills/agentkit-todo-claude`.
 It carries the same workflow semantics so Codex and Claude can converge on one skills-first orchestration contract during the MCP migration.

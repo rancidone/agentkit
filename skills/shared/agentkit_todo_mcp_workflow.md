@@ -3,6 +3,11 @@
 This reference defines the shared tasks-first workflow contract for the Codex and Claude Agentkit TODO skills.
 
 Temporary local helpers remain allowed only where MCP parity is incomplete. All repo, telemetry, and task lifecycle operations should use MCP tools first.
+These skills must preserve the repo's current dogfooding semantics during migration:
+
+1. Tasks-first remains the default execution mode unless explicitly changed later.
+2. Task lifecycle logging remains available for repo self-use.
+3. Index refresh and telemetry refresh/report steps remain part of the repo's own TODO execution flow.
 
 ## start-todo
 
@@ -36,6 +41,7 @@ Tasks-first branch:
 1. Execute the implementation workflow via the skill `next` contract.
 2. If successful, mark the TODO item `[x]` and use telemetry MCP `task.log_completed`.
 3. If failed, use telemetry MCP `task.log_failed`.
+4. Do not emit worker lifecycle events in tasks-first mode.
 
 Worker branch:
 

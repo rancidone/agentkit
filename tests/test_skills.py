@@ -23,6 +23,20 @@ class TestSkillWorkflowDocs(unittest.TestCase):
         ):
             self.assertIn(token, text)
 
+    def test_shared_workflow_preserves_tasks_first_dogfooding_semantics(self):
+        text = (REPO_ROOT / "skills" / "shared" / "agentkit_todo_mcp_workflow.md").read_text(encoding="utf-8")
+        for expected in (
+            "Tasks-first remains the default execution mode",
+            "Task lifecycle logging remains available for repo self-use",
+            "Index refresh and telemetry refresh/report steps remain part of the repo's own TODO execution flow",
+            "Do not emit worker lifecycle events in tasks-first mode",
+            "task.log_failed",
+            "task.log_completed",
+            "telemetry.report",
+            "telemetry.hotspots",
+        ):
+            self.assertIn(expected, text)
+
     def test_client_skills_reference_shared_mcp_workflow(self):
         for skill_name in ("agentkit-todo-codex", "agentkit-todo-claude"):
             text = (REPO_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
