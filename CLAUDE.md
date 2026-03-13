@@ -72,9 +72,9 @@ The legacy `claude/commands/` markdown remains in-repo temporarily for migration
 This repository now carries parallel skill packages for Codex and Claude under `skills/agentkit-todo-codex` and `skills/agentkit-todo-claude`, with the same tasks-first workflow semantics.
 Both point at `skills/shared/agentkit_todo_mcp_workflow.md`, which defines the MCP-first workflow contract for repo, telemetry, and task lifecycle operations.
 
-Install the backend tools and both skill packages globally:
+Install the managed MCP config artifacts and both skill packages globally:
 ```bash
-./agent-install-global-tools
+./agent-install
 ```
 
 ## Command Safety Rules

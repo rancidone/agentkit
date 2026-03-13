@@ -217,18 +217,26 @@ A parallel Claude-side skill package now lives at `skills/agentkit-todo-claude`.
 It carries the same workflow semantics so Codex and Claude can converge on one skills-first orchestration contract during the MCP migration.
 The shared MCP-backed workflow reference lives at `skills/shared/agentkit_todo_mcp_workflow.md`, and both skills use MCP tools first for repo, telemetry, and task lifecycle operations.
 
-Install the backend tools plus the supported Codex and Claude skill packages globally:
+Install the managed MCP config artifacts plus the supported Codex and Claude skill packages:
 
 ```bash
-./agent-install-global-tools
+./agent-install
 ```
 
-This installs backend tool symlinks into `~/.local/bin`, links the Codex skill into `$CODEX_HOME/skills` (default `~/.codex/skills`), and links the Claude skill into `$CLAUDE_HOME/skills` (default `~/.claude/skills`).
+This writes managed MCP config files for both clients, links the Codex skill into `$CODEX_HOME/skills` (default `~/.codex/skills`), links the Claude skill into `$CLAUDE_HOME/skills` (default `~/.claude/skills`), and records every managed artifact in an install manifest.
 For non-default install location:
+
+```bash
+./agent-install --codex-home /custom/codex --claude-home /custom/claude
+```
+
+Legacy compatibility install:
 
 ```bash
 ./agent-install-global-tools /custom/bin/dir
 ```
+
+This shim now delegates to `agent-install` and adds the legacy wrapper symlink fleet for transitional setups.
 
 Validate the Codex skill markdown, plus any retained legacy command markdown, with:
 

@@ -3,51 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${1:-$HOME/.local/bin}"
-CODEX_SKILLS_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
-CLAUDE_SKILLS_DIR="${CLAUDE_HOME:-$HOME/.claude}/skills"
 
-mkdir -p "$BIN_DIR"
-
-TOOLS=(
-  agent-install-global-tools
-  agentkit
-  agent-index
-  agent-index-refresh-light
-  agent-index-refresh-full
-  agent-telemetry
-  agent-telemetry-ingest
-  agent-telemetry-report
-  agent-telemetry-hotspots
-  agent-telemetry-strict
-  agent-log
-  agent-log-task-started
-  agent-log-task-complete
-  agent-log-task-failed
-  agent-log-worker-spawned
-  agent-log-worker-merged
-  agent-session-branch
-  agent-command-guard
-  agent-validate-command-docs
-  agent-commit-files
-  agent-weekly-telemetry-gate
-)
-
-for tool in "${TOOLS[@]}"; do
-  if [[ ! -x "${SCRIPT_DIR}/${tool}" ]]; then
-    echo "missing executable in repo: ${tool}" >&2
-    exit 1
-  fi
-  ln -sfn "${SCRIPT_DIR}/${tool}" "${BIN_DIR}/${tool}"
-done
-
-mkdir -p "$CODEX_SKILLS_DIR"
-mkdir -p "$CLAUDE_SKILLS_DIR"
-ln -sfn "${SCRIPT_DIR}/skills/agentkit-todo-codex" "${CODEX_SKILLS_DIR}/agentkit-todo-codex"
-ln -sfn "${SCRIPT_DIR}/skills/agentkit-todo-claude" "${CLAUDE_SKILLS_DIR}/agentkit-todo-claude"
-
-cat <<EOF
-Installed agentkit tools to: ${BIN_DIR}
-Installed Codex skill to: ${CODEX_SKILLS_DIR}/agentkit-todo-codex
-Installed Claude skill to: ${CLAUDE_SKILLS_DIR}/agentkit-todo-claude
-Ensure ${BIN_DIR} is in PATH for shell/Codex sessions.
-EOF
+echo "agent-install-global-tools is deprecated; using manifest-managed install plus legacy wrapper links." >&2
+exec python3 "${SCRIPT_DIR}/agent-install" --repo-root "${SCRIPT_DIR}" --legacy-bin-dir "${BIN_DIR}"

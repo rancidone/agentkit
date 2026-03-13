@@ -59,7 +59,7 @@
 
 ### Phase 4: Install And Uninstall Redesign
 
-- [ ] Replace `agent-install-global-tools` with an install flow centered on:
+- [x] Replace `agent-install-global-tools` with an install flow centered on:
   MCP service registration and config
   skill installation and linking
   manifest recording of every installed artifact
