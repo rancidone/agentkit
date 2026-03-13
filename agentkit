@@ -8,9 +8,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
-from agentkit_common import repo_root
+from agentkit_common import detect_runner, repo_root
 
 
 def _run_tool(script_name: str, args: list[str]) -> dict[str, Any]:
@@ -40,6 +41,36 @@ def _run_tool(script_name: str, args: list[str]) -> dict[str, Any]:
         return json.loads(output)
     except json.JSONDecodeError:
         return {"raw": output}
+
+
+def _telemetry_ingest_args(
+    repo: str,
+    claude_home: str,
+    codex_home: str,
+    events: str | None,
+) -> tuple[list[str], tempfile.TemporaryDirectory[str] | None]:
+    scope = detect_runner()
+    tmpdir: tempfile.TemporaryDirectory[str] | None = None
+
+    if scope == "codex":
+        tmpdir = tempfile.TemporaryDirectory(prefix="agentkit-empty-claude-")
+        claude_home = tmpdir.name
+    elif scope == "claude":
+        tmpdir = tempfile.TemporaryDirectory(prefix="agentkit-empty-codex-")
+        codex_home = tmpdir.name
+
+    ingest_args = [
+        "ingest",
+        "--repo",
+        repo,
+        "--claude-home",
+        claude_home,
+        "--codex-home",
+        codex_home,
+    ]
+    if events:
+        ingest_args.extend(["--events", events])
+    return ingest_args, tmpdir
 
 
 def cmd_prepare(args: argparse.Namespace) -> int:
@@ -80,11 +111,12 @@ def cmd_observe(args: argparse.Namespace) -> int:
     if events and not os.path.isabs(events):
         events = os.path.join(repo, events)
 
-    ingest_args = ["ingest", "--repo", repo, "--claude-home", args.claude_home]
-    if events:
-        ingest_args.extend(["--events", events])
-
-    ingest = _run_tool("agent-telemetry", ingest_args)
+    ingest_args, tmpdir = _telemetry_ingest_args(repo, args.claude_home, args.codex_home, events)
+    try:
+        ingest = _run_tool("agent-telemetry", ingest_args)
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
     report = _run_tool("agent-telemetry", ["report", "--repo", repo, "--window-days", str(args.window_days)])
     hotspots = _run_tool(
         "agent-telemetry",
@@ -136,11 +168,12 @@ def cmd_cycle(args: argparse.Namespace) -> int:
     events = args.events
     if events and not os.path.isabs(events):
         events = os.path.join(repo, events)
-    ingest_args = ["ingest", "--repo", repo, "--claude-home", args.claude_home]
-    if events:
-        ingest_args.extend(["--events", events])
-
-    ingest = _run_tool("agent-telemetry", ingest_args)
+    ingest_args, tmpdir = _telemetry_ingest_args(repo, args.claude_home, args.codex_home, events)
+    try:
+        ingest = _run_tool("agent-telemetry", ingest_args)
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
     report = _run_tool("agent-telemetry", ["report", "--repo", repo, "--window-days", str(args.window_days)])
 
     print(
@@ -173,6 +206,7 @@ def parser() -> argparse.ArgumentParser:
     p_observe = sp.add_parser("observe", help="Ingest telemetry and produce usage summaries.")
     p_observe.add_argument("--repo", default=".")
     p_observe.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_observe.add_argument("--codex-home", default=os.path.expanduser("~/.codex"))
     p_observe.add_argument("--events", default=".claude/agent-events.jsonl")
     p_observe.add_argument("--window-days", type=int, default=7)
     p_observe.add_argument("--hotspot-limit", type=int, default=12)
@@ -186,6 +220,7 @@ def parser() -> argparse.ArgumentParser:
     p_cycle.add_argument("--token-budget", type=int, default=2800)
     p_cycle.add_argument("--out")
     p_cycle.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_cycle.add_argument("--codex-home", default=os.path.expanduser("~/.codex"))
     p_cycle.add_argument("--events", default=".claude/agent-events.jsonl")
     p_cycle.add_argument("--window-days", type=int, default=7)
     p_cycle.add_argument("--hotspot-limit", type=int, default=12)

@@ -13,10 +13,12 @@ Use this skill when the user wants Codex to execute TODO.md items in `agentkit` 
 2. Do not use shell chaining, subshell expansion, heredocs, or ad-hoc pipelines.
 3. Run `agent-validate-command-docs .` before orchestration and before custom command execution.
 4. Never merge directly to `main` or `develop`.
+5. During the MCP migration, preserve the repo-local TODO workflow as a compatibility path for this repository's own dogfooding until MCP plus skills reach parity.
 
 ## Inputs
 
 - TODO source: `TODO.md`
+- Migration contract: `MIGRATION.md`
 - Repo config: `agentkit.json` (fallback `.claude/agentkit.json`)
 - Event log: `.claude/agent-events.jsonl`
 - Required CLIs: `agentkit` toolset on PATH (`agent-*`, `agent-index`, `agent-telemetry`)
@@ -43,6 +45,8 @@ agent-index-refresh-full .
 agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl
 ```
 
+In Codex, the ingest wrapper must auto-select Codex logs from the active runner environment instead of ingesting Claude usage logs by default.
+
 ```bash
 agent-session-branch todo
 ```
@@ -60,6 +64,7 @@ Task selection and dispatch:
    - At least `2` independent tasks are selected.
    - Each selected task is medium/high complexity.
    - Otherwise remain in tasks-first mode.
+7. Do not select or execute work that would leave this repo unable to run its own `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, or `telemetry-report` flow before MCP parity exists.
 
 Per selected task:
 

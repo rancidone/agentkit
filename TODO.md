@@ -10,7 +10,7 @@
   `agentkit-repo-mcp` for index, context, and config operations
   `agentkit-telemetry-mcp` for telemetry, state, and task lifecycle operations
 - [ ] Refactor current script logic into importable Python modules so both MCP services and temporary compatibility shims call the same code
-- [ ] Decide and document the bootstrap execution path for this repo itself:
+- [x] Decide and document the bootstrap execution path for this repo itself:
   skills orchestrate MCP first when available
   temporary local adapters are allowed only where needed to keep this repo operational during the migration
 - [ ] Keep current SQLite state and repo config behavior unchanged during this phase

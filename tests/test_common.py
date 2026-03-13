@@ -5,7 +5,14 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from agentkit_common import should_skip, infer_role, repo_id, parse_isoish_timestamp, validate_repo_config
+from agentkit_common import (
+    detect_runner,
+    infer_role,
+    parse_isoish_timestamp,
+    repo_id,
+    should_skip,
+    validate_repo_config,
+)
 
 
 class TestShouldSkip(unittest.TestCase):
@@ -172,6 +179,23 @@ class TestValidateRepoConfig(unittest.TestCase):
     def test_allow_custom_adapters_wrong_type(self):
         errors = validate_repo_config({"extract": {"allow_custom_adapters": "yes"}})
         self.assertGreater(len(errors), 0)
+
+
+class TestDetectRunner(unittest.TestCase):
+    def test_override_all(self):
+        self.assertEqual(detect_runner({"AGENTKIT_TELEMETRY_SCOPE": "all"}), "all")
+
+    def test_override_codex(self):
+        self.assertEqual(detect_runner({"AGENTKIT_RUNNER": "codex"}), "codex")
+
+    def test_detects_codex_from_env_prefix(self):
+        self.assertEqual(detect_runner({"CODEX_CI": "1"}), "codex")
+
+    def test_detects_claude_from_marker(self):
+        self.assertEqual(detect_runner({"CLAUDE_CODE": "1"}), "claude")
+
+    def test_defaults_to_all(self):
+        self.assertEqual(detect_runner({}), "all")
 
 
 class TestAdapterTrustGate(unittest.TestCase):

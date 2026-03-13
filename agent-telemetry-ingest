@@ -19,6 +19,47 @@ can_write_dir() {
   return 0
 }
 
+detect_runner() {
+  local override="${AGENTKIT_TELEMETRY_SCOPE:-${AGENTKIT_RUNNER:-}}"
+  if [[ -n "${override}" ]]; then
+    case "${override,,}" in
+      claude|codex|all)
+        printf '%s\n' "${override,,}"
+        return 0
+        ;;
+    esac
+  fi
+
+  if env | grep -q '^CODEX_'; then
+    printf '%s\n' "codex"
+    return 0
+  fi
+
+  if [[ -n "${CLAUDECODE:-}" || -n "${CLAUDE_CODE:-}" || -n "${CLAUDE_CODE_ENTRYPOINT:-}" || -n "${CLAUDECODE_ENTRYPOINT:-}" ]]; then
+    printf '%s\n' "claude"
+    return 0
+  fi
+
+  printf '%s\n' "all"
+}
+
+EMPTY_LOGS_DIR=""
+
+empty_logs_root() {
+  if [[ -z "${EMPTY_LOGS_DIR}" ]]; then
+    EMPTY_LOGS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentkit-empty-logs.XXXXXX")"
+  fi
+  printf '%s\n' "${EMPTY_LOGS_DIR}"
+}
+
+cleanup() {
+  if [[ -n "${EMPTY_LOGS_DIR}" && -d "${EMPTY_LOGS_DIR}" ]]; then
+    rm -rf "${EMPTY_LOGS_DIR}"
+  fi
+}
+
+trap cleanup EXIT
+
 if [[ -n "${AGENTKIT_STATE_DIR:-}" ]]; then
   STATE_DIR="${AGENTKIT_STATE_DIR}"
 else
@@ -33,6 +74,16 @@ else
     exit 1
   fi
 fi
+
+RUNNER_SCOPE="$(detect_runner)"
+case "${RUNNER_SCOPE}" in
+  codex)
+    CLAUDE_HOME="$(empty_logs_root)"
+    ;;
+  claude)
+    CODEX_HOME="$(empty_logs_root)"
+    ;;
+esac
 
 AGENTKIT_STATE_DIR="${STATE_DIR}" \
   "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-telemetry" ingest \

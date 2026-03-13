@@ -8,6 +8,12 @@ Agentkit is a framework-neutral CLI tooling suite for coding-agent workflows. It
 - **`agent-index`**: lightweight repo indexing and task-scoped context pack generation (SQLite-backed)
 - **`agent-telemetry`**: local telemetry ingestion and KPI reporting from Claude + Codex JSONL logs (SQLite-backed, WAL mode, single-writer lease)
 
+## Migration Bootstrap Contract
+
+Follow [MIGRATION.md](/home/maddie/repos/agentkit/MIGRATION.md) during the MCP transition.
+
+This repo must keep using agentkit to execute its own `TODO.md` workflow throughout the migration. Until MCP plus skills reach workflow parity, preserve the minimum in-repo compatibility path needed for this repository to keep running `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report` against itself.
+
 ## Common Commands
 
 ```bash
@@ -90,6 +96,7 @@ Always use `just` recipes or `agent-*` wrappers instead of composing shell comma
 - **Single-writer coordination**: a per-repo file lock serializes concurrent ingest calls.
 - Report/hotspots/export use read-mode connections and are available during ingest.
 - Full reset: `./agent-telemetry rebuild --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl`
+- `./agent-telemetry-ingest` now auto-selects provider logs from the active runner environment. Use `AGENTKIT_TELEMETRY_SCOPE=codex`, `claude`, or `all` only when you need to override the default.
 
 ## Inspecting Agentkit State DBs
 
@@ -111,3 +118,4 @@ This avoids one-off `python3 -c "..."` debug scripts for every query. Without it
 ## start-todo Execution Model
 
 Default mode is **tasks-first**: execute tasks directly in-session with lifecycle logging. Escalate to worker-branch only when the heuristic passes: at least 2 independent tasks from current phase, each medium or high complexity. In tasks-first mode, only `task-started`/`task-completed`/`task-failed` events are logged — no synthetic worker events. Never merge into `main` or `develop` from `start-todo`.
+While MCP migration is in progress, this workflow is also part of the required repo-local compatibility path for self-dogfooding; do not remove it before the MCP-backed replacement reaches parity for this repository.

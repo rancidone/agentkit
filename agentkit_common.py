@@ -74,6 +74,27 @@ def default_state_dir() -> str:
         return fallback
 
 
+def detect_runner(env: dict[str, str] | None = None) -> str:
+    env_map = os.environ if env is None else env
+    override = (env_map.get("AGENTKIT_TELEMETRY_SCOPE") or env_map.get("AGENTKIT_RUNNER") or "").strip().lower()
+    if override in {"claude", "codex", "all"}:
+        return override
+
+    if any(key.startswith("CODEX_") and env_map.get(key) for key in env_map):
+        return "codex"
+
+    claude_markers = (
+        "CLAUDECODE",
+        "CLAUDE_CODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDECODE_ENTRYPOINT",
+    )
+    if any(env_map.get(key) for key in claude_markers):
+        return "claude"
+
+    return "all"
+
+
 def read_json(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)

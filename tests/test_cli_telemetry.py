@@ -15,6 +15,7 @@ from tests.conftest import make_tmp_repo
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 AGENT_TELEMETRY = str(REPO_ROOT / "agent-telemetry")
+AGENT_TELEMETRY_INGEST = str(REPO_ROOT / "agent-telemetry-ingest")
 
 
 def make_tmp_telemetry_env(tmp: pathlib.Path, repo: pathlib.Path) -> dict[str, str]:
@@ -33,6 +34,31 @@ def make_tmp_telemetry_env(tmp: pathlib.Path, repo: pathlib.Path) -> dict[str, s
         "codex_home": str(codex_home),
         "events_file": str(events_file),
     }
+
+
+def write_usage_log(root: pathlib.Path, filename: str, repo: pathlib.Path, input_tokens: int) -> None:
+    log_dir = root / "projects" / "session"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "cwd": str(repo),
+        "sessionId": "sess-1",
+        "conversationId": "conv-1",
+        "timestamp": "2026-03-13T12:00:00Z",
+        "message": {
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": 5,
+            },
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": str(repo / "main.py"), "offset": 0, "limit": 20},
+                }
+            ],
+        },
+    }
+    (log_dir / filename).write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
 
 class TestAgentTelemetryIngest(unittest.TestCase):
@@ -109,6 +135,65 @@ class TestAgentTelemetryIngest(unittest.TestCase):
         )
         data = json.loads(result.stdout)
         self.assertTrue(data.get("incremental"))
+
+
+class TestTelemetryIngestWrapper(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.repo = make_tmp_repo(self.tmp / "repo")
+        self.fixtures = make_tmp_telemetry_env(self.tmp, self.repo)
+        self.env = {
+            **os.environ,
+            "AGENTKIT_STATE_DIR": self.fixtures["state_dir"],
+        }
+        write_usage_log(pathlib.Path(self.fixtures["claude_home"]), "claude.jsonl", self.repo, 11)
+        write_usage_log(pathlib.Path(self.fixtures["codex_home"]), "codex.jsonl", self.repo, 22)
+
+    def test_wrapper_auto_detects_codex_and_skips_claude_logs(self):
+        env = {
+            **self.env,
+            "CODEX_CI": "1",
+        }
+        result = subprocess.run(
+            [
+                AGENT_TELEMETRY_INGEST,
+                str(self.repo),
+                self.fixtures["claude_home"],
+                self.fixtures["events_file"],
+                self.fixtures["codex_home"],
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["usage_events_by_provider"]["claude"], 0)
+        self.assertEqual(data["usage_events_by_provider"]["codex"], 1)
+        self.assertEqual(data["files_scanned_by_provider"]["claude"], 0)
+        self.assertEqual(data["files_scanned_by_provider"]["codex"], 1)
+
+    def test_wrapper_override_can_force_claude_only(self):
+        env = {
+            **self.env,
+            "AGENTKIT_TELEMETRY_SCOPE": "claude",
+        }
+        result = subprocess.run(
+            [
+                AGENT_TELEMETRY_INGEST,
+                str(self.repo),
+                self.fixtures["claude_home"],
+                self.fixtures["events_file"],
+                self.fixtures["codex_home"],
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["usage_events_by_provider"]["claude"], 1)
+        self.assertEqual(data["usage_events_by_provider"]["codex"], 0)
 
 
 class TestAgentTelemetryReport(unittest.TestCase):
