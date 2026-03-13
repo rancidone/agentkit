@@ -34,7 +34,7 @@
   `task.log_failed`
   `task.log_worker_spawned`
   `task.log_worker_merged`
-- [ ] Keep MCP outputs structurally aligned with current JSON-producing CLI behavior to minimize orchestration churn
+- [x] Keep MCP outputs structurally aligned with current JSON-producing CLI behavior to minimize orchestration churn
 - [ ] Remove CLI-only concerns from shared logic where they do not belong in MCP, especially file-output behavior for `index.pack`
 - [ ] Add first-class inspect tools so the current introspection gaps are solved in the MCP surface instead of as more ad-hoc scripts
 

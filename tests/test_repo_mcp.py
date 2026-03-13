@@ -114,6 +114,87 @@ class TestRepoMcpServer(unittest.TestCase):
         self.assertIn("db_path", inspect)
         self.assertGreater(inspect["counts"]["tasks"], 0)
 
+    def test_mcp_build_matches_cli_output(self):
+        cli = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "agent-index"), "build", "--repo", str(self.repo), "--mode", "full"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        )
+        cli_data = json.loads(cli.stdout)
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "index.build", "arguments": {"repo": str(self.repo), "mode": "full"}},
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_REPO_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
+        self.assertEqual(mcp_data, cli_data)
+
+    def test_mcp_pack_matches_cli_output(self):
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "agent-index"), "build", "--repo", str(self.repo)],
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "agent-index"),
+                "pack",
+                "--repo",
+                str(self.repo),
+                "--task",
+                "test task one",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        )
+        cli_data = json.loads(cli.stdout)
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "index.pack",
+                            "arguments": {"repo": str(self.repo), "task": "test task one"},
+                        },
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_REPO_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
+        self.assertEqual(mcp_data, cli_data)
+
 
 if __name__ == "__main__":
     unittest.main()

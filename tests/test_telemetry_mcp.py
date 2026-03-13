@@ -153,6 +153,108 @@ class TestTelemetryMcpServer(unittest.TestCase):
         self.assertEqual(ingest["task_events_ingested"], 1)
         self.assertGreaterEqual(inspect["counts"]["task_events"], 1)
 
+    def test_mcp_ingest_matches_cli_output(self):
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "agent-telemetry"),
+                "ingest",
+                "--repo",
+                str(self.repo),
+                "--claude-home",
+                self.fixtures["claude_home"],
+                "--codex-home",
+                self.fixtures["codex_home"],
+                "--events",
+                self.fixtures["events_file"],
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        )
+        cli_data = json.loads(cli.stdout)
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "telemetry.ingest",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "claude_home": self.fixtures["claude_home"],
+                                "codex_home": self.fixtures["codex_home"],
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
+        self.assertEqual(mcp_data, cli_data)
+
+    def test_mcp_report_matches_cli_output(self):
+        subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "agent-telemetry"),
+                "ingest",
+                "--repo",
+                str(self.repo),
+                "--claude-home",
+                self.fixtures["claude_home"],
+                "--codex-home",
+                self.fixtures["codex_home"],
+                "--events",
+                self.fixtures["events_file"],
+            ],
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        cli = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "agent-telemetry"), "report", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=self.env,
+        )
+        cli_data = json.loads(cli.stdout)
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "telemetry.report", "arguments": {"repo": str(self.repo)}},
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
+        self.assertEqual(mcp_data, cli_data)
+
 
 if __name__ == "__main__":
     unittest.main()
