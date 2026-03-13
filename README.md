@@ -178,12 +178,12 @@ You can load adapters from repo files (trusted repos only).
 
 Template: `examples/custom_adapter.py`
 
-## Claude Commands (Portable)
+## Legacy Claude Command Markdown
 
-Portable Claude command markdown lives in `claude/commands/`.
-These commands invoke scoped wrappers and `just` recipes (no shell composition, no multiline chains).
+Legacy Claude command markdown still lives in `claude/commands/`, but it is no longer a supported user-facing interface.
+Skills are the supported orchestration layer during the migration. The legacy markdown remains in-repo only as a temporary compatibility artifact.
 
-Validate command docs for banned patterns:
+Validate skill markdown, and any legacy command markdown still present in the repo, for banned shell patterns:
 
 ```bash
 ./agent-validate-command-docs .
@@ -200,8 +200,6 @@ Guard-friendly command patterns:
 printf '%s\n' "feat: phase 7 build pipeline" "" "- Add build-all.sh and docs updates" > /tmp/commit-msg.txt
 ./agent-commit-files --message-file /tmp/commit-msg.txt --files firmware/CMakeLists.txt thermometer-ui/vite.config.ts README.md build-all.sh
 ```
-
-To use them in Claude Code, copy or symlink the files into your local `~/.claude/commands/` directory.
 
 ## Codex Integration
 
@@ -224,14 +222,14 @@ For non-default install location:
 ./agent-install-global-tools /custom/bin/dir
 ```
 
-Validate both Claude command docs and Codex skill markdown with:
+Validate the Codex skill markdown, plus any retained legacy command markdown, with:
 
 ```bash
 ./agent-validate-command-docs .
 ```
 
 Ensure the install bin directory is on `PATH` for both your shell and Codex runtime.
-Claude command support remains unchanged and fully supported in parallel.
+Claude command markdown is not a supported install surface anymore.
 
 ## License
 

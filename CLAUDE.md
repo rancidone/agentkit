@@ -20,7 +20,7 @@ This repo must keep using agentkit to execute its own `TODO.md` workflow through
 just --list                          # show all available recipes
 just setup                           # validate docs + full index refresh + telemetry ingest (session start)
 just observe                         # telemetry ingest + report + hotspots (session finish)
-just validate-command-docs           # validate claude/commands/ and skill markdown for banned patterns
+just validate-command-docs           # validate skill markdown and any legacy command markdown for banned patterns
 just command-guard "<cmd>"           # check a command shape before running it
 just index-refresh-light             # incremental index refresh
 just index-refresh-full              # full index rebuild
@@ -63,18 +63,13 @@ All scripts are Python 3.10+ (shebang `#!/usr/bin/env python3`) or bash. No buil
 
 **`agentkit`**: High-level orchestrator CLI with three subcommands: `prepare` (index + pack), `observe` (ingest + report), `cycle` (prepare + observe).
 
-## Claude Commands
+## Skills
 
-Portable Claude command markdown lives in `claude/commands/`. These are the skills available as `/skill-name`:
-- `/start-todo` — orchestrate TODO.md using tasks-first default (worker-branch only when ≥2 independent medium/high-complexity tasks)
-- `/next <task>` — implement a task with lifecycle wrappers
-- `/check` — run lint/test/checks and fix all issues
-- `/validate` — deep validation of completed implementation
-- `/prompt <task>` — synthesize execution prompt
-- `/index-refresh` — scoped index refresh
-- `/telemetry-report` — ingest and report telemetry
+Skills are the supported user-facing orchestration layer.
 
-Install commands into `~/.claude/commands/` by symlinking. Install all tools and the Codex skill globally:
+The legacy `claude/commands/` markdown remains in-repo temporarily for migration compatibility, but it is not a supported interface and should not be installed as a primary workflow surface.
+
+Install all tools and the Codex skill globally:
 ```bash
 ./agent-install-global-tools
 ```

@@ -5,17 +5,14 @@ ROOT="${1:-.}"
 DOC_DIR="${ROOT}/claude/commands"
 SKILL_DIR="${ROOT}/skills/agentkit-todo-codex"
 
-if [[ ! -d "$DOC_DIR" ]]; then
-  echo "missing command docs directory: ${DOC_DIR}" >&2
-  exit 1
-fi
-
 PATTERN='\$\(|<<|2>&1[[:space:]]*\|[[:space:]]*tail|&&|\|\||\\$'
 
-declare -a TARGETS
-while IFS= read -r file; do
-  TARGETS+=("$file")
-done < <(find "$DOC_DIR" -type f -name '*.md' | sort)
+declare -a TARGETS=()
+if [[ -d "$DOC_DIR" ]]; then
+  while IFS= read -r file; do
+    TARGETS+=("$file")
+  done < <(find "$DOC_DIR" -type f -name '*.md' | sort)
+fi
 
 if [[ -d "$SKILL_DIR" ]]; then
   while IFS= read -r file; do
@@ -24,7 +21,7 @@ if [[ -d "$SKILL_DIR" ]]; then
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-  echo "no markdown command docs found under ${DOC_DIR} or ${SKILL_DIR}" >&2
+  echo "no skill or legacy command markdown found under ${SKILL_DIR} or ${DOC_DIR}" >&2
   exit 1
 fi
 
