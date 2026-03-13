@@ -13,6 +13,28 @@ Framework-neutral CLI tooling for coding-agent workflows.
 - Task-level telemetry and KPI tracking (`tokens per completed TODO`).
 - Policy-aware orchestration support (allowlist + soft warnings).
 
+## Migration Contract
+
+The active migration contract is documented in [MIGRATION.md](/home/maddie/repos/agentkit/MIGRATION.md).
+
+During the MCP transition, this repository must keep using agentkit to execute its own `TODO.md` workflow. Until MCP plus skills reach workflow parity, retain the minimum in-repo compatibility path required for this repo to keep dogfooding `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+
+## MCP Backend Split
+
+Phase 1 establishes an explicit two-service backend split without removing the existing wrapper-based compatibility path:
+
+- `agentkit-repo-mcp` owns repo, index, context pack, and repo-config operations.
+- `agentkit-telemetry-mcp` owns telemetry ingestion/reporting, state handling, and task lifecycle logging.
+
+Bootstrap entrypoints are available now:
+
+```bash
+./agentkit-repo-mcp
+./agentkit-telemetry-mcp
+```
+
+At this stage they publish the service contract only. The current `agent-*` wrappers remain the supported dogfooding path for this repository until the MCP-backed skills reach workflow parity.
+
 ## Requirements
 
 - Python 3.10+
@@ -39,6 +61,7 @@ Framework-neutral CLI tooling for coding-agent workflows.
 - Checkpoints are tracked per source log so reruns only process new records.
 - Writes are serialized by a per-repo writer lease, allowing concurrent Codex/Claude callers without DB lock races.
 - `agent-telemetry rebuild` is the maintenance path for full reset + recompute.
+- `agent-telemetry-ingest` auto-detects the active runner environment: Codex ingests Codex logs, Claude ingests Claude logs, and explicit overrides can use `AGENTKIT_TELEMETRY_SCOPE=codex|claude|all`.
 
 ## Task Event Logging (KPI Wiring)
 
@@ -177,6 +200,7 @@ An installable Codex skill is included at `skills/agentkit-todo-codex`.
 It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and uses strict `agent-*` wrappers (no shell composition).
 The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
+This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
 
 Install agentkit tools and the skill globally:
 

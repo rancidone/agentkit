@@ -1,88 +1,119 @@
 # TODO
 
-## Bugs
+## Active
 
-- [x] Fix `sqlite3.IntegrityError: UNIQUE constraint failed: idx_task_runs_unique` in `_build_task_runs` — ingest crashes when event log contains multiple `task_started` events for the same (task_id, session_branch). Use `INSERT OR REPLACE` or pre-deduplicate before insert.
-- [x] Reduce per-command Bash approval prompts during orchestration — added `just setup` (validate+index+ingest) and `just observe` (ingest+report+hotspots) composite recipes.
-- [x] Evaluate adding `mcp-server-sqlite` (from `@modelcontextprotocol/server-sqlite`) to the Claude Code MCP config for direct DB inspection of agentkit state — documented setup in CLAUDE.md.
-- [x] Document (and enforce in skill/command docs) that context must be compacted before spawning subagent workers to avoid context bleed and redundant re-reads.
+### Phase 1: Bootstrap MCP Without Breaking Dogfooding
 
-## Plan: SQLite Single-Writer Telemetry + Incremental Ingest
+- [x] Add a migration constraint to the implementation and docs: this repo must keep using agentkit to execute its own `TODO.md` workflow throughout the migration
+- [x] Define the bootstrap rule: until MCP plus skills reach workflow parity, keep the minimum in-repo compatibility path needed for this repo to continue dogfooding `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`
+- [x] Split the backend into two MCP services:
+  `agentkit-repo-mcp` for index, context, and config operations
+  `agentkit-telemetry-mcp` for telemetry, state, and task lifecycle operations
+- [ ] Refactor current script logic into importable Python modules so both MCP services and temporary compatibility shims call the same code
+- [ ] Decide and document the bootstrap execution path for this repo itself:
+  skills orchestrate MCP first when available
+  temporary local adapters are allowed only where needed to keep this repo operational during the migration
+- [ ] Keep current SQLite state and repo config behavior unchanged during this phase
 
-## Plan
-- [x] Add SQLite storage hardening in `agent-telemetry` (`WAL`, `busy_timeout`, deterministic write transactions, bounded lock retry).
-- [x] Centralize DB connection creation into explicit read/write modes.
-- [x] Add single-writer coordination lock in state dir so concurrent ingest calls serialize.
-- [x] Replace destructive ingest with incremental ingest using per-source checkpoints.
-- [x] Add checkpoint schema/table and stable source keys for Claude usage logs, Codex usage logs, and task event logs.
-- [x] Keep existing uniqueness indexes as idempotency backstop for duplicate events.
-- [x] Add explicit maintenance command for full rebuild/reset; keep normal ingest non-destructive.
-- [x] Ensure report/hotspots/export use read-mode connections and remain available during ingest activity.
-- [x] Update telemetry documentation in `README.md` to reflect incremental behavior, single-writer model, and rebuild semantics.
-- [x] Run command doc validation plus targeted telemetry regression checks.
+### Phase 2: Expose Core MCP Tool Surface
+
+- [ ] Implement `agentkit-repo-mcp` stdio server with these tools:
+  `index.build`
+  `index.refresh`
+  `index.query`
+  `index.pack`
+  `index.inspect`
+- [ ] Implement `agentkit-telemetry-mcp` stdio server with these tools:
+  `telemetry.ingest`
+  `telemetry.report`
+  `telemetry.hotspots`
+  `telemetry.trend`
+  `telemetry.inspect`
+  `task.log_started`
+  `task.log_completed`
+  `task.log_failed`
+  `task.log_worker_spawned`
+  `task.log_worker_merged`
+- [ ] Keep MCP outputs structurally aligned with current JSON-producing CLI behavior to minimize orchestration churn
+- [ ] Remove CLI-only concerns from shared logic where they do not belong in MCP, especially file-output behavior for `index.pack`
+- [ ] Add first-class inspect tools so the current introspection gaps are solved in the MCP surface instead of as more ad-hoc scripts
+
+### Phase 3: Replace Commands With Skills
+
+- [ ] Retire Claude command markdown as a supported interface
+- [ ] Rework agentkit skills so skills are the only user-facing orchestration layer
+- [ ] Update the Codex skill and add or align Claude-side skill packaging so both clients orchestrate the same MCP-backed workflow semantics
+- [ ] Rewrite workflow logic so skills call MCP tools instead of local wrapper scripts for:
+  `start-todo`
+  `next`
+  `check`
+  `validate`
+  `prompt`
+  `index-refresh`
+  `telemetry-report`
+- [ ] Preserve current dogfooding workflow semantics during migration:
+  tasks-first default remains intact unless explicitly changed later
+  task lifecycle logging remains available for repo self-use
+  index and telemetry refresh steps still work for this repo's own TODO execution
+- [ ] Update `start-todo` spec so the repo can continue implementing its own TODOs via the new MCP-backed skills during rollout
+
+### Phase 4: Install And Uninstall Redesign
+
+- [ ] Replace `agent-install-global-tools` with an install flow centered on:
+  MCP service registration and config
+  skill installation and linking
+  manifest recording of every installed artifact
+- [ ] Stop installing the current `agent-*` wrapper fleet into `~/.local/bin`
+- [ ] Add `agent-uninstall` with default behavior: remove only agentkit-managed install artifacts
+- [ ] For new installs, uninstall must remove:
+  installed skill artifacts
+  agentkit-owned MCP config entries or generated config files
+  any managed launch helpers
+  the install manifest
+- [ ] For legacy installs, add best-effort cleanup that removes only:
+  historical symlinks created by `agent-install-global-tools` that still point to this repo
+  the legacy Codex skill symlink if it still points to this repo
+- [ ] Default uninstall must not remove:
+  telemetry DBs
+  event logs
+  repo-local data
+  arbitrary user-created files or copied scripts
+- [ ] Make uninstall idempotent and safe if paths moved or artifacts are already missing
+
+### Phase 5: Repo Migration And Dogfood Cutover
+
+- [ ] Add repo-local client config and examples so this repository itself can run against the two MCP services while developing the migration
+- [ ] Convert this repo's own documented development workflow to use the MCP-backed skills first
+- [ ] Keep a clearly documented temporary fallback path only until this repo can complete TODO work entirely through MCP-backed skills
+- [ ] Declare the hard switch complete only when this repository can dogfood the new architecture end-to-end for its own TODO execution
+- [ ] After successful dogfood cutover, deprecate remaining compatibility shims and remove them from the supported install surface
 
 ## Acceptance Criteria
-- [x] Two concurrent `agent-telemetry ingest` runs complete without lock errors or data loss.
-- [x] Re-running ingest without new input leaves totals stable (no duplicate inflation).
-- [x] Interrupted ingest resumes from checkpoints without dropping or double-counting events.
-- [x] Rebuild/reset command fully recomputes repo telemetry from source logs when explicitly invoked.
-- [x] Existing report outputs continue to include correct provider splits and task KPI fields.
+
+- This repository can execute its own TODO workflow using agentkit skills backed by MCP services, without requiring globally installed `agent-*` wrappers
+- `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report` all work through skills as orchestrators over MCP
+- Repo and index operations are served by `agentkit-repo-mcp`, and telemetry and state operations by `agentkit-telemetry-mcp`
+- The new install flow sets up MCP services and skills, and records managed artifacts in a manifest
+- Default uninstall removes managed install artifacts and legacy repo-owned symlinks, while preserving state DBs and logs
+- This repo can continue dogfooding agentkit throughout the migration, with no period where its own TODO workflow is unsupported
+
+## Test Plan
+
+- Add unit tests for shared backend modules extracted from current scripts
+- Add MCP server tests covering tool input validation and stable JSON outputs for both services
+- Add workflow-level tests for MCP-backed skills covering current TODO execution flows
+- Add install and uninstall tests for manifest-managed installs and legacy symlink cleanup
+- Add dogfood smoke tests proving this repo can:
+  build and refresh index
+  pack task context
+  log task lifecycle
+  ingest and report telemetry
+  drive TODO execution through skills
 
 ## Assumptions
-- [x] Backend remains SQLite only (no Postgres in this pass).
-- [x] Scope is telemetry datastore concurrency/durability; repo code-edit conflicts are out of scope.
 
-## Phase 1: Automated Test Suite
-
-Add pytest coverage for the pure-function and CLI surface so future changes have a
-regression safety net. Tests live in a new `tests/` directory.
-
-- [x] Create `tests/` directory with `__init__.py` and `conftest.py`; add `pytest` to a new `requirements-dev.txt`
-- [x] Write unit tests for `agentkit_common.py`: `should_skip`, `infer_role`, `repo_id`, and `parse_isoish_timestamp` with edge cases
-- [x] Write unit tests for `agent_extractors.py`: `extract_python`, `extract_ts_js`, `extract_c_like` against synthetic multi-function source strings
-- [x] Write unit tests for `_tokenize` and `_score_candidates` in `agent-index`: verify synonym expansion, token deduplication, and score ordering against a mock DB
-- [x] Write unit tests for `parse_tasks_from_todo` in `agent-index`: verify phase extraction, done/undone detection, and task_id generation
-- [x] Write CLI smoke test for `agent-index build` and `agent-index pack` against a temp repo fixture
-- [x] Write CLI smoke test for `agent-telemetry ingest` and `agent-telemetry report` against synthetic JSONL fixture
-- [x] Add `just test` recipe running `python3 -m unittest discover tests/ -v`
-
-## Phase 2: Context Scoring Improvements
-
-Fix two concrete scoring defects: path-only scoring misses files where task keywords appear
-only in content, and symbol scoring uses hardcoded domain terms instead of task tokens.
-
-- [x] Add `synonyms` key to the `context` section of `agentkit.json`; merge repo-defined synonyms with built-in set in `_tokenize`
-- [x] In `_score_candidates`, add content-grep pass for top-30 path-scored candidates: read first 300 lines, add `+1.0` per task token match, capped at `+4.0` per file
-- [x] In `_pick_snippets`, replace hardcoded symbol keyword list with task token matching using `_tokenize` output
-- [x] Add `score_debug` field to `agent-index query` subcommand output with path/content/symbol score breakdown
-- [x] Write unit tests for updated `_tokenize` with repo-supplied synonyms and content-grep scoring path
-
-## Phase 3: Security Hardening
-
-Add JSON schema validation for `agentkit.json` and a trust gate for Python adapter loading.
-
-- [x] Define JSON schema for `agentkit.json` as a Python dict constant in `agentkit_common.py` covering all config sections
-- [x] Add `validate_repo_config(cfg) -> list[str]` to `agentkit_common.py`; call from `load_repo_config` with stderr warnings (non-fatal)
-- [x] Add `allow_custom_adapters` boolean key (default `false`) to `extract` schema; skip python-type adapters with clear stderr error when absent or false
-- [x] Add `--allow-custom-adapters` CLI flag to `agent-index build` and `agent-index refresh`
-- [x] Write unit tests for `validate_repo_config` schema violations and adapter trust gate behavior
-
-## Phase 4: Telemetry Trend Exposure
-
-Surface the `v_trends` view that already exists in the telemetry DB but is never displayed.
-
-- [x] Add `trend` subcommand to `agent-telemetry` rendering `v_trends` as a day table (day, tasks, tokens_total, avg_duration_s, loc_changed); default 30-day window
-- [x] Add `--since YYYY-MM-DD` flag to `agent-telemetry report`, `hotspots`, and `trend` as alternative to `--window-days`
-- [x] Add `just telemetry-trend` recipe following existing wrapper pattern in justfile
-- [x] Extend `agent-telemetry report` with one-line velocity summary (tasks in window, total tokens, mean duration, trend direction)
-- [x] Write unit tests for `trend` subcommand output format and `--since` date parsing against a synthetic DB
-
-## Phase 5: Tooling Gap Closure
-
-Ad-hoc bash one-liners observed during Phases 1–4 that should become first-class commands or `just` recipes. Each gap represents a recurring manual step that wasn't wrapped.
-
-- [ ] Add `agent-index inspect` subcommand (or `just index-inspect`) that pretty-prints DB stats (file count by role, task count by phase, symbol count, DB path) without requiring ad-hoc `sqlite3` or `python3 -c "..."` invocations
-- [ ] Add `agent-index pack-check` subcommand: runs pack for a task and prints a human summary (file count, snippet count, score_debug top-5) — eliminates the need to pipe pack output through `python3 -c "import json,sys; ..."`
-- [ ] Add `just test-verbose` recipe that runs tests with `-v` and captures failures to a temp file for review — workers in sandboxed worktrees can't run bash, so orchestrator needs a quick test-result diffing workflow
-- [ ] Add `agent-telemetry inspect` subcommand: prints DB path, checkpoint state, and row counts per table — eliminates ad-hoc `python3 -c "import sqlite3; ..."` DB introspection during debugging
-- [ ] Add `just check-output cmd args` or a lightweight output-validator wrapper that runs a command and validates its JSON output has expected keys — replaces inline `python3 -c` key-checking one-liners in CI and test setup
+- MCP is the execution and data provider layer; skills are the only supported user-facing orchestrators
+- The backend split is exactly two MCP services
+- Existing SQLite-backed state and repo config stay in place during the migration
+- Command markdown is retired rather than migrated
+- Default uninstall is conservative and preserves user and state data
