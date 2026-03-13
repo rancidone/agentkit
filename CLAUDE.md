@@ -61,7 +61,7 @@ All scripts are Python 3.10+ (shebang `#!/usr/bin/env python3`) or bash. No buil
 
 **`agent_extractors.py`**: Symbol extraction adapters — built-in (`esp-idf-http-routes`, `svelte-live-api`, `typescript-stores`) and custom Python plugins loaded from repo files.
 
-**`agentkit`**: High-level orchestrator CLI with three subcommands: `prepare` (index + pack), `observe` (ingest + report), `cycle` (prepare + observe).
+**`agentkit`**: Backend utility CLI with three subcommands: `prepare` (index + pack), `observe` (ingest + report), `cycle` (prepare + observe). It is useful for local debugging and compatibility flows, not as the supported end-user orchestration layer.
 
 ## Skills
 
@@ -69,7 +69,7 @@ Skills are the supported user-facing orchestration layer.
 
 The legacy `claude/commands/` markdown remains in-repo temporarily for migration compatibility, but it is not a supported interface and should not be installed as a primary workflow surface.
 
-Install all tools and the Codex skill globally:
+Install the backend tools and the Codex skill globally:
 ```bash
 ./agent-install-global-tools
 ```

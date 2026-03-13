@@ -5,7 +5,7 @@ description: Run Agentkit TODO.md execution workflows in Codex using strict just
 
 # Agentkit TODO Codex
 
-Use this skill when the user wants Codex to execute TODO.md items in `agentkit` using existing wrappers and lifecycle tracking.
+Use this skill as the supported user-facing orchestration layer for TODO.md execution in `agentkit`. Backend CLIs and wrappers remain implementation details for now.
 
 ## Safety Rules
 

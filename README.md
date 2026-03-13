@@ -109,9 +109,10 @@ just telemetry-hotspots
 ```
 
 
-## Unified Orchestration CLI
+## Backend Utility CLI
 
-Use `agentkit` as a top-level orchestrator for indexing/context packing and telemetry reporting.
+Skills are the supported user-facing orchestration layer.
+Use `agentkit` only as a backend utility CLI for local debugging, smoke checks, or temporary compatibility flows while the skill migration is in progress.
 
 ```bash
 ./agentkit prepare --repo . --task "implement SSE endpoint" --out /tmp/pack.json
@@ -204,18 +205,19 @@ printf '%s\n' "feat: phase 7 build pipeline" "" "- Add build-all.sh and docs upd
 ## Codex Integration
 
 An installable Codex skill is included at `skills/agentkit-todo-codex`.
+This skill is the supported user-facing orchestration entrypoint for the TODO workflow in Codex.
 It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and uses strict `agent-*` wrappers (no shell composition).
 The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
 
-Install agentkit tools and the skill globally:
+Install the backend tools plus the supported Codex skill globally:
 
 ```bash
 ./agent-install-global-tools
 ```
 
-This installs command symlinks into `~/.local/bin` and links the skill into `$CODEX_HOME/skills` (default `~/.codex/skills`).
+This installs backend tool symlinks into `~/.local/bin` and links the skill into `$CODEX_HOME/skills` (default `~/.codex/skills`).
 For non-default install location:
 
 ```bash

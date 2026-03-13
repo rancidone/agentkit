@@ -41,7 +41,7 @@
 ### Phase 3: Replace Commands With Skills
 
 - [x] Retire Claude command markdown as a supported interface
-- [ ] Rework agentkit skills so skills are the only user-facing orchestration layer
+- [x] Rework agentkit skills so skills are the only user-facing orchestration layer
 - [ ] Update the Codex skill and add or align Claude-side skill packaging so both clients orchestrate the same MCP-backed workflow semantics
 - [ ] Rewrite workflow logic so skills call MCP tools instead of local wrapper scripts for:
   `start-todo`
