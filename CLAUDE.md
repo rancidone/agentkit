@@ -100,7 +100,9 @@ Always use `just` recipes or `agent-*` wrappers instead of composing shell comma
 
 ## Inspecting Agentkit State DBs
 
-The agentkit SQLite databases live in `~/.claude/tools/agentkit/state/`. For ad-hoc inspection, configure `mcp-server-sqlite` in Claude Code's MCP settings pointed at the state dir:
+Prefer the repo MCP `index.inspect` / `config.load` tools and the telemetry MCP `telemetry.inspect` / `task.inspect` tools first. Those cover the supported inspection paths without dropping into ad-hoc SQL.
+
+The agentkit SQLite databases still live in `~/.claude/tools/agentkit/state/`. If you need lower-level inspection beyond the MCP surface, configure `mcp-server-sqlite` in Claude Code's MCP settings pointed at the state dir:
 
 ```json
 {

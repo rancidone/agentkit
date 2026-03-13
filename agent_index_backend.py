@@ -14,11 +14,12 @@ from agent_extractors import extract_symbols, load_adapters, snippet_preview
 from agentkit_common import (
     DEFAULT_EXCLUDES,
     default_state_dir,
+    find_repo_config_path,
     infer_role,
     iter_repo_files,
     load_repo_config,
     repo_id,
-    repo_root,
+    validate_repo_config,
 )
 
 
@@ -481,6 +482,18 @@ def inspect_index(repo: str) -> dict[str, Any]:
         "file_counts_by_role": file_counts,
         "task_counts_by_phase": task_counts,
         "symbol_counts_by_extractor": symbol_extractors,
+    }
+
+
+def inspect_repo_config(repo: str) -> dict[str, Any]:
+    cfg_path = find_repo_config_path(repo)
+    cfg = load_repo_config(repo)
+    return {
+        "repo": repo,
+        "config_path": cfg_path,
+        "config_found": cfg_path is not None,
+        "config": cfg,
+        "validation_warnings": validate_repo_config(cfg) if cfg_path else [],
     }
 
 

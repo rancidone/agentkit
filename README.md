@@ -33,9 +33,16 @@ Bootstrap entrypoints are available now:
 ./agentkit-telemetry-mcp
 ```
 
-At this stage they publish the service contract only. The current `agent-*` wrappers remain the supported dogfooding path for this repository until the MCP-backed skills reach workflow parity.
+At this stage the current `agent-*` wrappers remain the supported dogfooding path for this repository until the MCP-backed skills reach workflow parity.
 The shared backend logic now lives in importable modules, with `agent-index` delegating to `agent_index_cli` over `agent_index_backend`, and `agent-telemetry` delegating to `agent_telemetry_backend`.
 Phase 1 keeps the current SQLite state layout and repo config lookup unchanged: DB files still resolve from `agentkit_common.default_state_dir()`, and repo config still loads from `.claude/agentkit.json` first with `agentkit.json` as the fallback.
+
+Current inspect-oriented MCP tools include:
+
+- `index.inspect`
+- `config.load`
+- `telemetry.inspect`
+- `task.inspect`
 
 ## Requirements
 

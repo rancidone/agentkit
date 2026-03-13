@@ -83,6 +83,7 @@ class TestTelemetryMcpServer(unittest.TestCase):
                 "telemetry.hotspots",
                 "telemetry.trend",
                 "telemetry.inspect",
+                "task.inspect",
                 "task.log_started",
                 "task.log_completed",
                 "task.log_failed",
@@ -152,6 +153,85 @@ class TestTelemetryMcpServer(unittest.TestCase):
         self.assertEqual(logged["event_type"], "task_started")
         self.assertEqual(ingest["task_events_ingested"], 1)
         self.assertGreaterEqual(inspect["counts"]["task_events"], 1)
+
+    def test_stdio_can_inspect_task_runs(self):
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_started",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-inspect",
+                                "session_branch": "todo/test",
+                                "task_text": "Test telemetry MCP inspect",
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_completed",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-inspect",
+                                "session_branch": "todo/test",
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "telemetry.ingest",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "claude_home": self.fixtures["claude_home"],
+                                "codex_home": self.fixtures["codex_home"],
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.inspect",
+                            "arguments": {"repo": str(self.repo), "task_id": "phase2-inspect"},
+                        },
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        task_data = _parse_frames(result.stdout)[4]["result"]["structuredContent"]
+        self.assertEqual(task_data["task_id"], "phase2-inspect")
+        self.assertEqual(task_data["run_count"], 1)
+        self.assertEqual(task_data["event_count"], 2)
+        self.assertEqual(task_data["latest_run"]["task_id"], "phase2-inspect")
 
     def test_mcp_ingest_matches_cli_output(self):
         cli = subprocess.run(

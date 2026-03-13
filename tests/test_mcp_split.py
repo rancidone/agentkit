@@ -34,6 +34,7 @@ class TestServiceDefinitions(unittest.TestCase):
 
     def test_telemetry_service_owns_telemetry_and_task_capabilities(self):
         self.assertIn("telemetry.ingest", TELEMETRY_SERVICE.owned_capabilities)
+        self.assertIn("task.inspect", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("task.log_completed", TELEMETRY_SERVICE.owned_capabilities)
         self.assertEqual(TELEMETRY_SERVICE.backend_module, "agent_telemetry_backend")
         self.assertNotIn("index.query", TELEMETRY_SERVICE.owned_capabilities)

@@ -36,7 +36,7 @@
   `task.log_worker_merged`
 - [x] Keep MCP outputs structurally aligned with current JSON-producing CLI behavior to minimize orchestration churn
 - [x] Remove CLI-only concerns from shared logic where they do not belong in MCP, especially file-output behavior for `index.pack`
-- [ ] Add first-class inspect tools so the current introspection gaps are solved in the MCP surface instead of as more ad-hoc scripts
+- [x] Add first-class inspect tools so the current introspection gaps are solved in the MCP surface instead of as more ad-hoc scripts
 
 ### Phase 3: Replace Commands With Skills
 

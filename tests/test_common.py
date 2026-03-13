@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from agentkit_common import (
     default_state_dir,
     detect_runner,
+    find_repo_config_path,
     infer_role,
     load_repo_config,
     parse_isoish_timestamp,
@@ -225,6 +226,7 @@ class TestStateAndConfigDefaults(unittest.TestCase):
             (repo / ".claude" / "agentkit.json").write_text(json.dumps({"context": {"default_token_budget": 456}}))
             cfg = load_repo_config(str(repo))
             self.assertEqual(cfg["context"]["default_token_budget"], 456)
+            self.assertEqual(find_repo_config_path(str(repo)), str(repo / ".claude" / "agentkit.json"))
 
     def test_load_repo_config_falls_back_to_repo_root(self):
         with tempfile.TemporaryDirectory() as tmp:

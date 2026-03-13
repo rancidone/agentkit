@@ -75,7 +75,10 @@ class TestRepoMcpServer(unittest.TestCase):
         )
         messages = _parse_frames(result.stdout)
         tool_names = [tool["name"] for tool in messages[1]["result"]["tools"]]
-        self.assertEqual(tool_names, ["index.build", "index.refresh", "index.query", "index.pack", "index.inspect"])
+        self.assertEqual(
+            tool_names,
+            ["index.build", "index.refresh", "index.query", "index.pack", "index.inspect", "config.load"],
+        )
 
     def test_stdio_can_call_build_and_inspect(self):
         payload = b"".join(
@@ -113,6 +116,37 @@ class TestRepoMcpServer(unittest.TestCase):
         self.assertEqual(inspect["repo"], str(self.repo))
         self.assertIn("db_path", inspect)
         self.assertGreater(inspect["counts"]["tasks"], 0)
+
+    def test_stdio_can_load_repo_config(self):
+        (self.repo / "agentkit.json").write_text(
+            json.dumps({"context": {"default_token_budget": 321}}),
+            encoding="utf-8",
+        )
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": "config.load", "arguments": {"repo": str(self.repo)}},
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_REPO_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        config = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
+        self.assertEqual(config["repo"], str(self.repo))
+        self.assertTrue(config["config_found"])
+        self.assertTrue(str(config["config_path"]).endswith("agentkit.json"))
+        self.assertEqual(config["config"]["context"]["default_token_budget"], 321)
 
     def test_mcp_build_matches_cli_output(self):
         cli = subprocess.run(

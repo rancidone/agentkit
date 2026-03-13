@@ -168,17 +168,24 @@ def validate_repo_config(cfg: dict[str, Any]) -> list[str]:
 
 
 def load_repo_config(repo: str) -> dict[str, Any]:
+    cfg_path = find_repo_config_path(repo)
+    if cfg_path:
+        cfg = read_json(cfg_path)
+        for warning in validate_repo_config(cfg):
+            print(f"[agentkit warning] {warning}", file=sys.stderr)
+        return cfg
+    return {}
+
+
+def find_repo_config_path(repo: str) -> str | None:
     candidates = [
         os.path.join(repo, ".claude", "agentkit.json"),
         os.path.join(repo, "agentkit.json"),
     ]
     for cfg_path in candidates:
         if os.path.exists(cfg_path):
-            cfg = read_json(cfg_path)
-            for warning in validate_repo_config(cfg):
-                print(f"[agentkit warning] {warning}", file=sys.stderr)
-            return cfg
-    return {}
+            return cfg_path
+    return None
 
 
 def should_skip(rel_path: str, excludes: set[str]) -> bool:

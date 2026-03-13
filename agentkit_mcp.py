@@ -44,6 +44,7 @@ TELEMETRY_SERVICE = ServiceDefinition(
         "telemetry.hotspots",
         "telemetry.trend",
         "telemetry.inspect",
+        "task.inspect",
         "task.log_started",
         "task.log_completed",
         "task.log_failed",

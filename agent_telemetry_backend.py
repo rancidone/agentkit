@@ -1670,6 +1670,17 @@ def task_run_details(repo: str, task_id: str) -> dict[str, Any]:
     }
 
 
+def inspect_task_run(repo: str, task_id: str) -> dict[str, Any]:
+    details = task_run_details(repo, task_id)
+    latest_run = details["runs"][-1] if details["runs"] else None
+    return {
+        **details,
+        "run_count": len(details["runs"]),
+        "event_count": len(details["events"]),
+        "latest_run": latest_run,
+    }
+
+
 def _cutoff_from_args(args: argparse.Namespace) -> float:
     """Return epoch-seconds cutoff from --since or --window-days (whichever is set)."""
     since = getattr(args, "since", None)

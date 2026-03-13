@@ -13,6 +13,7 @@ from agent_telemetry_backend import (
     hotspots_telemetry,
     ingest_telemetry,
     inspect_telemetry,
+    inspect_task_run,
     report_telemetry,
     trend_telemetry,
 )
@@ -73,6 +74,14 @@ def _handle_trend(arguments: dict[str, Any]) -> dict[str, Any]:
 def _handle_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
     repo = repo_root(str(arguments.get("repo", ".")))
     return inspect_telemetry(repo)
+
+
+def _handle_task_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    task_id = str(arguments.get("task_id", "")).strip()
+    if not task_id:
+        raise SystemExit("task_id is required")
+    return inspect_task_run(repo, task_id)
 
 
 def _tools() -> list[ToolDefinition]:
@@ -137,6 +146,18 @@ def _tools() -> list[ToolDefinition]:
             "Inspect telemetry DB counts and ingest checkpoints.",
             {"type": "object", "properties": {"repo": {"type": "string"}}},
             _handle_inspect,
+        ),
+        ToolDefinition(
+            "task.inspect",
+            "Inspect the runs and lifecycle events recorded for a task_id.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                },
+            },
+            _handle_task_inspect,
         ),
         ToolDefinition(
             "task.log_started",

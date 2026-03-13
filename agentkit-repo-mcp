@@ -7,7 +7,14 @@ import argparse
 import json
 from typing import Any
 
-from agent_index_backend import build_index, build_pack, inspect_index, query_by_id, search_candidates
+from agent_index_backend import (
+    build_index,
+    build_pack,
+    inspect_index,
+    inspect_repo_config,
+    query_by_id,
+    search_candidates,
+)
 from agentkit_common import repo_root
 from agentkit_mcp import describe_service
 from agentkit_mcp_server import ToolDefinition, run_stdio_server
@@ -57,6 +64,11 @@ def _handle_pack(arguments: dict[str, Any]) -> dict[str, Any]:
 def _handle_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
     repo = repo_root(str(arguments.get("repo", ".")))
     return inspect_index(repo)
+
+
+def _handle_config_load(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    return inspect_repo_config(repo)
 
 
 def _tools() -> list[ToolDefinition]:
@@ -126,6 +138,17 @@ def _tools() -> list[ToolDefinition]:
                 },
             },
             handler=_handle_inspect,
+        ),
+        ToolDefinition(
+            name="config.load",
+            description="Load the repo agentkit config and report the resolved config path.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                },
+            },
+            handler=_handle_config_load,
         ),
     ]
 
