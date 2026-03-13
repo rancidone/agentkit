@@ -37,6 +37,16 @@ class TestSkillWorkflowDocs(unittest.TestCase):
         ):
             self.assertIn(expected, text)
 
+    def test_start_todo_spec_keeps_repo_self_dogfooding_rollout_requirements(self):
+        text = (REPO_ROOT / "skills" / "shared" / "agentkit_todo_mcp_workflow.md").read_text(encoding="utf-8")
+        for expected in (
+            "`start-todo` must operate against this repository's own `TODO.md`",
+            "The repo-local event log remains `.claude/agent-events.jsonl` during rollout",
+            "The session branch remains a `todo/*` branch",
+            "The flow must stay capable of implementing this repository's own TODO items end to end throughout rollout",
+        ):
+            self.assertIn(expected, text)
+
     def test_client_skills_reference_shared_mcp_workflow(self):
         for skill_name in ("agentkit-todo-codex", "agentkit-todo-claude"):
             text = (REPO_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")

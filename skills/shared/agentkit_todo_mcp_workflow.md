@@ -18,6 +18,14 @@ Setup:
 3. Use the telemetry MCP tool `telemetry.ingest` with the repo and event-log inputs.
 4. Use the temporary compatibility helper `agent-session-branch todo` to create or reuse the session branch until branch/session state is served via MCP.
 
+Rollout requirements for repo self-dogfooding:
+
+1. `start-todo` must operate against this repository's own `TODO.md` with `repo` set to `"."`.
+2. The repo-local event log remains `.claude/agent-events.jsonl` during rollout.
+3. The session branch remains a `todo/*` branch created from the current repo state.
+4. MCP tools are the first choice for repo, telemetry, and task lifecycle work, but temporary local helpers remain allowed where parity is incomplete.
+5. The flow must stay capable of implementing this repository's own TODO items end to end throughout rollout.
+
 Task selection and dispatch:
 
 1. Read unchecked `[ ]` items in `TODO.md`.

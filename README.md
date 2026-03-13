@@ -211,6 +211,7 @@ The `start-todo` orchestration defaults to tasks-first execution, and only escal
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
 The MCP-first skill flow preserves the repo's current self-dogfooding semantics: tasks-first stays the default, task lifecycle logging remains available for repo self-use, and index/telemetry refresh steps remain part of TODO execution.
+During rollout, the `start-todo` spec continues to target this repository's own `TODO.md`, `.claude/agent-events.jsonl`, and `todo/*` session branches so the repo can keep implementing itself through the migration.
 
 A parallel Claude-side skill package now lives at `skills/agentkit-todo-claude`.
 It carries the same workflow semantics so Codex and Claude can converge on one skills-first orchestration contract during the MCP migration.
