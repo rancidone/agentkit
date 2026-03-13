@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${1:-.}"
 DOC_DIR="${ROOT}/claude/commands"
-SKILL_DIR="${ROOT}/skills/agentkit-todo-codex"
+SKILLS_DIR="${ROOT}/skills"
 
 PATTERN='\$\(|<<|2>&1[[:space:]]*\|[[:space:]]*tail|&&|\|\||\\$'
 
@@ -14,14 +14,14 @@ if [[ -d "$DOC_DIR" ]]; then
   done < <(find "$DOC_DIR" -type f -name '*.md' | sort)
 fi
 
-if [[ -d "$SKILL_DIR" ]]; then
+if [[ -d "$SKILLS_DIR" ]]; then
   while IFS= read -r file; do
     TARGETS+=("$file")
-  done < <(find "$SKILL_DIR" -type f -name '*.md' | sort)
+  done < <(find "$SKILLS_DIR" -type f -name '*.md' | sort)
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-  echo "no skill or legacy command markdown found under ${SKILL_DIR} or ${DOC_DIR}" >&2
+  echo "no skill or legacy command markdown found under ${SKILLS_DIR} or ${DOC_DIR}" >&2
   exit 1
 fi
 

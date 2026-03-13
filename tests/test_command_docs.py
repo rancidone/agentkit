@@ -16,10 +16,30 @@ class TestCommandDocsValidator(unittest.TestCase):
     def test_validator_succeeds_without_legacy_claude_commands_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp)
-            skill_dir = repo / "skills" / "agentkit-todo-codex"
+            for skill_name in ("agentkit-todo-codex", "agentkit-todo-claude"):
+                skill_dir = repo / "skills" / skill_name
+                skill_dir.mkdir(parents=True)
+                shutil.copy(
+                    REPO_ROOT / "skills" / skill_name / "SKILL.md",
+                    skill_dir / "SKILL.md",
+                )
+
+            result = subprocess.run(
+                [VALIDATOR, str(repo)],
+                capture_output=True,
+                text=True,
+                env=os.environ,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("command docs validation OK", result.stdout)
+
+    def test_validator_succeeds_with_only_claude_skill_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp)
+            skill_dir = repo / "skills" / "agentkit-todo-claude"
             skill_dir.mkdir(parents=True)
             shutil.copy(
-                REPO_ROOT / "skills" / "agentkit-todo-codex" / "SKILL.md",
+                REPO_ROOT / "skills" / "agentkit-todo-claude" / "SKILL.md",
                 skill_dir / "SKILL.md",
             )
 

@@ -69,7 +69,9 @@ Skills are the supported user-facing orchestration layer.
 
 The legacy `claude/commands/` markdown remains in-repo temporarily for migration compatibility, but it is not a supported interface and should not be installed as a primary workflow surface.
 
-Install the backend tools and the Codex skill globally:
+This repository now carries parallel skill packages for Codex and Claude under `skills/agentkit-todo-codex` and `skills/agentkit-todo-claude`, with the same tasks-first workflow semantics.
+
+Install the backend tools and both skill packages globally:
 ```bash
 ./agent-install-global-tools
 ```

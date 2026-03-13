@@ -211,13 +211,16 @@ The `start-todo` orchestration defaults to tasks-first execution, and only escal
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
 This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
 
-Install the backend tools plus the supported Codex skill globally:
+A parallel Claude-side skill package now lives at `skills/agentkit-todo-claude`.
+It carries the same workflow semantics so Codex and Claude can converge on one skills-first orchestration contract during the MCP migration.
+
+Install the backend tools plus the supported Codex and Claude skill packages globally:
 
 ```bash
 ./agent-install-global-tools
 ```
 
-This installs backend tool symlinks into `~/.local/bin` and links the skill into `$CODEX_HOME/skills` (default `~/.codex/skills`).
+This installs backend tool symlinks into `~/.local/bin`, links the Codex skill into `$CODEX_HOME/skills` (default `~/.codex/skills`), and links the Claude skill into `$CLAUDE_HOME/skills` (default `~/.claude/skills`).
 For non-default install location:
 
 ```bash
