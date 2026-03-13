@@ -51,11 +51,11 @@
   `prompt`
   `index-refresh`
   `telemetry-report`
-- [ ] Preserve current dogfooding workflow semantics during migration:
+- [x] Preserve current dogfooding workflow semantics during migration:
   tasks-first default remains intact unless explicitly changed later
   task lifecycle logging remains available for repo self-use
   index and telemetry refresh steps still work for this repo's own TODO execution
-- [ ] Update `start-todo` spec so the repo can continue implementing its own TODOs via the new MCP-backed skills during rollout
+- [x] Update `start-todo` spec so the repo can continue implementing its own TODOs via the new MCP-backed skills during rollout
 
 ### Phase 4: Install And Uninstall Redesign
 
