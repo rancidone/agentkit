@@ -32,10 +32,13 @@ class TestRepoLocalDevConfigs(unittest.TestCase):
     def test_docs_present_skills_first_and_fallback_path(self):
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-        self.assertIn("Repo-Local Skills-First Dogfooding", readme)
+        self.assertIn("Skills-First Dogfooding", readme)
         self.assertIn("Local Helper Fallbacks", readme)
+        self.assertIn("./agent-install", readme)
+        self.assertIn("~/.codex/agentkit/mcp-servers.json", readme)
         self.assertIn("agentkit-todo-codex start-todo", readme)
         self.assertIn("Skills-First Workflow", claude)
+        self.assertIn("managed global MCP configs", claude)
         self.assertIn("Local Helper Commands", claude)
 
     def test_docs_record_hard_switch_and_no_supported_legacy_wrapper_install(self):

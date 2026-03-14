@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+from agentkit_common import repo_id
 from tests.conftest import make_tmp_repo
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -63,6 +65,32 @@ class TestAgentIndexBuild(unittest.TestCase):
         )
         data = json.loads(result.stdout)
         self.assertGreater(data["tasks_indexed"], 0)
+
+    def test_build_respects_repo_config_exclude_paths(self):
+        (self.repo / "agentkit.json").write_text(
+            json.dumps({"index": {"exclude_paths": [".agentkit/state"]}}),
+            encoding="utf-8",
+        )
+        ignored_dir = self.repo / ".agentkit" / "state"
+        ignored_dir.mkdir(parents=True)
+        (ignored_dir / "ignored.py").write_text("print('ignore me')\n", encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, AGENT_INDEX, "build", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+        db_path = self.state_dir / f"index-{repo_id(str(self.repo))}.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            indexed_paths = [row[0] for row in conn.execute("SELECT path FROM files WHERE repo = ?", (str(self.repo),))]
+        finally:
+            conn.close()
+
+        self.assertNotIn(".agentkit/state/ignored.py", indexed_paths)
 
 
 class TestAgentIndexPack(unittest.TestCase):

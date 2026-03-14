@@ -16,6 +16,8 @@ Framework-neutral CLI tooling for coding-agent workflows.
 ## Migration Contract
 
 The active migration contract is documented in [MIGRATION.md](/home/maddie/repos/agentkit/MIGRATION.md).
+The telemetry TUI scope for the next rollout steps is documented in [docs/telemetry-tui-scope.md](/home/maddie/repos/agentkit/docs/telemetry-tui-scope.md).
+The operator workflow for the shipped TUI lives in [docs/telemetry-tui-workflow.md](/home/maddie/repos/agentkit/docs/telemetry-tui-workflow.md).
 
 During the MCP transition, this repository must keep using agentkit to execute its own `TODO.md` workflow. The repo-local hard switch is now complete: this repo dogfoods `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report` through MCP-backed skills, with scoped local helpers retained only where MCP parity is still intentionally incomplete.
 
@@ -48,28 +50,28 @@ Current inspect-oriented MCP tools include:
 - `config.load`
 - `telemetry.inspect`
 - `task.inspect`
+- `tui.snapshot`
+- `tui.task_detail`
 
 ## Requirements
 
 - Python 3.10+
 - Git (for repository detection)
 
-## Repo-Local Skills-First Dogfooding
+## Skills-First Dogfooding
 
 ```bash
-mkdir -p .agentkit/state .codex/agentkit .claude/agentkit
-REPO_ROOT="$PWD"
-sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/codex-mcp-servers.repo-local.example.json > .codex/agentkit/mcp-servers.json
-sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/claude-mcp-servers.repo-local.example.json > .claude/agentkit/mcp-servers.json
+./agent-install
 ```
 
-After those repo-local client configs are in place, run the TODO workflow through the client skill surface:
+This installs the managed global MCP configs at `~/.codex/agentkit/mcp-servers.json` and `~/.claude/agentkit/mcp-servers.json` by default, links the supported skills, and is the default dogfood path for this repository.
+
+After the managed global client configs are in place, run the TODO workflow through the client skill surface:
 
 - Codex: `agentkit-todo-codex start-todo`
 - Claude: `agentkit-todo-claude start-todo`
 
 Use the same skills for `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
-The repo-local examples keep `AGENTKIT_STATE_DIR` inside `.agentkit/state`, so dogfooding does not depend on user-home writable state directories.
 
 ## Local Helper Fallbacks
 
@@ -77,6 +79,7 @@ The hard switch for this repository is complete. These lower-level commands rema
 
 ```bash
 just setup
+just telemetry-tui
 just context-pack "implement SSE endpoint" /tmp/pack.json
 just task-started phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
 just task-completed phase4-fw todo/20260308-130742
@@ -92,6 +95,7 @@ Lower-level backend utilities remain available for debugging and smoke checks:
 ./agent-telemetry migrate --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl
 ./agent-telemetry-report . 7
 ./agent-telemetry-hotspots . 7 12
+./agent-telemetry-tui --repo .
 ./agent-telemetry rebuild --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl
 ./agent-telemetry export --repo . --dataset task_kpi --format csv --out .claude/task-kpi.csv
 ./agent-telemetry-strict --repo . --window-days 7 --enforce
@@ -265,7 +269,7 @@ For non-default install location:
 ./agent-install --codex-home /custom/codex --claude-home /custom/claude
 ```
 
-For repo-local dogfooding while this migration is in progress, point both clients at this checkout and keep state inside the repo:
+If you specifically need repo-local override config while this migration is in progress, point both clients at this checkout and keep state inside the repo:
 
 ```bash
 mkdir -p .agentkit/state .codex/agentkit .claude/agentkit

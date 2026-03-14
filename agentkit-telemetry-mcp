@@ -17,6 +17,8 @@ from agent_telemetry_backend import (
     migrate_telemetry,
     report_telemetry,
     trend_telemetry,
+    tui_snapshot,
+    tui_task_detail,
 )
 from agentkit_common import repo_root
 from agentkit_mcp import describe_service
@@ -98,6 +100,39 @@ def _handle_task_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
     if not task_id:
         raise SystemExit("task_id is required")
     return inspect_task_run(repo, task_id)
+
+
+def _handle_tui_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    provider = arguments.get("provider")
+    provider_filter = None if provider in (None, "") else str(provider)
+    task_outcome = arguments.get("task_outcome")
+    outcome_filter = None if task_outcome in (None, "") else str(task_outcome)
+    search_text = arguments.get("search_text")
+    search_filter = None if search_text in (None, "") else str(search_text)
+    complexity_min = arguments.get("complexity_min")
+    complexity_max = arguments.get("complexity_max")
+    return tui_snapshot(
+        repo,
+        int(arguments.get("window_days", 7)),
+        arguments.get("since"),
+        hotspot_limit=int(arguments.get("hotspot_limit", 12)),
+        warn_avg_tokens=int(arguments.get("warn_avg_tokens", 25000)),
+        task_limit=int(arguments.get("task_limit", 50)),
+        provider=provider_filter,
+        task_outcome=outcome_filter,
+        search_text=search_filter,
+        complexity_min=int(complexity_min) if complexity_min is not None else None,
+        complexity_max=int(complexity_max) if complexity_max is not None else None,
+    )
+
+
+def _handle_tui_task_detail(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    task_id = str(arguments.get("task_id", "")).strip()
+    if not task_id:
+        raise SystemExit("task_id is required")
+    return tui_task_detail(repo, task_id)
 
 
 def _tools() -> list[ToolDefinition]:
@@ -192,6 +227,39 @@ def _tools() -> list[ToolDefinition]:
                 },
             },
             _handle_task_inspect,
+        ),
+        ToolDefinition(
+            "tui.snapshot",
+            "Return read-only telemetry models for the TUI summary, trends, hotspots, inspect, and task-run views.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "window_days": {"type": "integer"},
+                    "since": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "task_outcome": {"type": "string"},
+                    "search_text": {"type": "string"},
+                    "complexity_min": {"type": "integer"},
+                    "complexity_max": {"type": "integer"},
+                    "task_limit": {"type": "integer"},
+                    "hotspot_limit": {"type": "integer"},
+                    "warn_avg_tokens": {"type": "integer"},
+                },
+            },
+            _handle_tui_snapshot,
+        ),
+        ToolDefinition(
+            "tui.task_detail",
+            "Return read-only task detail for a TUI drill-down by task_id.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "task_id": {"type": "string"},
+                },
+            },
+            _handle_tui_task_detail,
         ),
         ToolDefinition(
             "task.log_started",

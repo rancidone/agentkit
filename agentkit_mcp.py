@@ -46,6 +46,8 @@ TELEMETRY_SERVICE = ServiceDefinition(
         "telemetry.trend",
         "telemetry.inspect",
         "task.inspect",
+        "tui.snapshot",
+        "tui.task_detail",
         "task.log_started",
         "task.log_completed",
         "task.log_failed",

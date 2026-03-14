@@ -36,6 +36,8 @@ class TestServiceDefinitions(unittest.TestCase):
         self.assertIn("telemetry.migrate", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("telemetry.ingest", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("task.inspect", TELEMETRY_SERVICE.owned_capabilities)
+        self.assertIn("tui.snapshot", TELEMETRY_SERVICE.owned_capabilities)
+        self.assertIn("tui.task_detail", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("task.log_completed", TELEMETRY_SERVICE.owned_capabilities)
         self.assertEqual(TELEMETRY_SERVICE.backend_module, "agent_telemetry_backend")
         self.assertNotIn("index.query", TELEMETRY_SERVICE.owned_capabilities)

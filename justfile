@@ -27,6 +27,9 @@ telemetry-hotspots repo='.' window_days='7' limit='12':
 telemetry-trend repo='.' window_days='30':
   ./agent-telemetry-trend "{{repo}}" "{{window_days}}"
 
+telemetry-tui repo='.' window_days='7':
+  AGENTKIT_STATE_DIR="$PWD/.agentkit/state" ./agent-telemetry-tui --repo "{{repo}}" --window-days "{{window_days}}"
+
 context-pack task out token_budget='2800' limit='12' repo='.':
   ./agent-index pack --repo "{{repo}}" --task "{{task}}" --token-budget "{{token_budget}}" --limit "{{limit}}" --out "{{out}}"
 

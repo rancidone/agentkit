@@ -18,8 +18,8 @@ This repo must keep using agentkit to execute its own `TODO.md` workflow through
 
 Use the MCP-backed skills as the primary workflow surface for this repository.
 
-- Materialize repo-local MCP configs from `examples/codex-mcp-servers.repo-local.example.json` and `examples/claude-mcp-servers.repo-local.example.json`.
-- Keep writable state in `.agentkit/state` through `AGENTKIT_STATE_DIR`.
+- Install the managed global MCP configs with `./agent-install`.
+- The default managed config paths are `~/.codex/agentkit/mcp-servers.json` and `~/.claude/agentkit/mcp-servers.json`.
 - Run `agentkit-todo-codex` or `agentkit-todo-claude` for `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
 
 ## Local Helper Commands
@@ -37,6 +37,7 @@ just index-refresh-full              # full index rebuild
 just telemetry-ingest                # incremental telemetry ingest (non-destructive)
 just telemetry-report                # 7-day summary report
 just telemetry-hotspots              # 7-day hotspot table (12 rows)
+just telemetry-tui                   # launch the repo-local telemetry UI
 just context-pack "<task>" "/tmp/out.json"  # generate task context pack
 just session-branch todo             # create/reuse session branch (prints branch name)
 ```
@@ -87,7 +88,7 @@ Install the managed MCP config artifacts and both skill packages globally:
 ./agent-install
 ```
 
-For this repository's own dogfood workflow, prefer the repo-local MCP examples under `examples/` over global install state whenever you are testing migration behavior in-place.
+For this repository's own dogfood workflow, prefer the managed global install state by default. Use the repo-local MCP examples under `examples/` only when you explicitly need a local override while testing migration behavior in-place.
 
 Remove only agentkit-managed install artifacts with:
 ```bash

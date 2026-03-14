@@ -1620,99 +1620,102 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def report_telemetry(repo: str, window_days: int, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    _require_current_schema(conn, repo)
-    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
+    try:
+        _require_current_schema(conn, repo)
+        cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
-    completed = conn.execute(
-        """
-        SELECT COUNT(*)
-        FROM task_runs
-        WHERE repo = ? AND task_outcome = 'completed' AND COALESCE(ended_at, started_at) >= ?
-        """,
-        (repo, cutoff),
-    ).fetchone()[0]
+        completed = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM task_runs
+            WHERE repo = ? AND task_outcome = 'completed' AND COALESCE(ended_at, started_at) >= ?
+            """,
+            (repo, cutoff),
+        ).fetchone()[0]
 
-    totals = conn.execute(
-        """
-        SELECT
-          COALESCE(SUM(tokens_total), 0),
-          COALESCE(SUM(tokens_claude), 0),
-          COALESCE(SUM(tokens_codex), 0),
-          COALESCE(SUM(tokens_prompt_completion), 0),
-          COALESCE(SUM(tokens_cache), 0)
-        FROM task_runs
-        WHERE repo = ? AND started_at >= ?
-        """,
-        (repo, cutoff),
-    ).fetchone()
+        totals = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(tokens_total), 0),
+              COALESCE(SUM(tokens_claude), 0),
+              COALESCE(SUM(tokens_codex), 0),
+              COALESCE(SUM(tokens_prompt_completion), 0),
+              COALESCE(SUM(tokens_cache), 0)
+            FROM task_runs
+            WHERE repo = ? AND started_at >= ?
+            """,
+            (repo, cutoff),
+        ).fetchone()
 
-    grand = int(totals[0] or 0)
-    kpi = (grand / completed) if completed else None
+        grand = int(totals[0] or 0)
+        kpi = (grand / completed) if completed else None
 
-    confidence_rows = conn.execute(
-        """
-        SELECT token_confidence, COUNT(*)
-        FROM task_runs
-        WHERE repo = ? AND started_at >= ?
-        GROUP BY token_confidence
-        """,
-        (repo, cutoff),
-    ).fetchall()
+        confidence_rows = conn.execute(
+            """
+            SELECT token_confidence, COUNT(*)
+            FROM task_runs
+            WHERE repo = ? AND started_at >= ?
+            GROUP BY token_confidence
+            """,
+            (repo, cutoff),
+        ).fetchall()
 
-    trends = _compute_trends(conn, repo, window_days)
+        trends = _compute_trends(conn, repo, window_days)
 
-    task_sample = conn.execute(
-        """
-        SELECT task_id, session_branch, task_text, tokens_claude, tokens_codex, duration_seconds, complexity_points, task_outcome
-        FROM v_task_kpi
-        WHERE repo = ? AND started_at >= ?
-        ORDER BY started_at DESC
-        LIMIT 10
-        """,
-        (repo, cutoff),
-    ).fetchall()
+        task_sample = conn.execute(
+            """
+            SELECT task_id, session_branch, task_text, tokens_claude, tokens_codex, duration_seconds, complexity_points, task_outcome
+            FROM v_task_kpi
+            WHERE repo = ? AND started_at >= ?
+            ORDER BY started_at DESC
+            LIMIT 10
+            """,
+            (repo, cutoff),
+        ).fetchall()
 
-    mean_dur = None
-    if trends["points"]:
-        durs = [p["avg_duration_seconds"] for p in trends["points"] if p["avg_duration_seconds"] > 0]
-        mean_dur = round(sum(durs) / len(durs), 2) if durs else None
-    trend_dir = trends["slopes"].get("direction_tokens_per_task", "flat")
+        mean_dur = None
+        if trends["points"]:
+            durs = [p["avg_duration_seconds"] for p in trends["points"] if p["avg_duration_seconds"] > 0]
+            mean_dur = round(sum(durs) / len(durs), 2) if durs else None
+        trend_dir = trends["slopes"].get("direction_tokens_per_task", "flat")
 
-    return {
-        "repo": repo,
-        "window_days": window_days,
-        "since": since,
-        "completed_tasks": int(completed),
-        "tokens": {
-            "total": grand,
-            "claude": int(totals[1] or 0),
-            "codex": int(totals[2] or 0),
-            "prompt_completion": int(totals[3] or 0),
-            "cache": int(totals[4] or 0),
-        },
-        "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
-        "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
-        "trend": trends["slopes"],
-        "velocity_summary": {
-            "tasks_in_window": int(completed),
-            "total_tokens": grand,
-            "mean_duration_seconds": mean_dur,
-            "trend_direction": trend_dir,
-        },
-        "recent_task_samples": [
-            {
-                "task_id": r[0],
-                "session_branch": r[1],
-                "task_text": r[2],
-                "tokens_claude": int(r[3] or 0),
-                "tokens_codex": int(r[4] or 0),
-                "duration_seconds": round(float(r[5] or 0.0), 2),
-                "complexity_points": r[6],
-                "task_outcome": r[7],
-            }
-            for r in task_sample
-        ],
-    }
+        return {
+            "repo": repo,
+            "window_days": window_days,
+            "since": since,
+            "completed_tasks": int(completed),
+            "tokens": {
+                "total": grand,
+                "claude": int(totals[1] or 0),
+                "codex": int(totals[2] or 0),
+                "prompt_completion": int(totals[3] or 0),
+                "cache": int(totals[4] or 0),
+            },
+            "kpi_tokens_per_completed_todo": round(kpi, 2) if kpi is not None else None,
+            "attribution_confidence": {str(r[0] or "none"): int(r[1]) for r in confidence_rows},
+            "trend": trends["slopes"],
+            "velocity_summary": {
+                "tasks_in_window": int(completed),
+                "total_tokens": grand,
+                "mean_duration_seconds": mean_dur,
+                "trend_direction": trend_dir,
+            },
+            "recent_task_samples": [
+                {
+                    "task_id": r[0],
+                    "session_branch": r[1],
+                    "task_text": r[2],
+                    "tokens_claude": int(r[3] or 0),
+                    "tokens_codex": int(r[4] or 0),
+                    "duration_seconds": round(float(r[5] or 0.0), 2),
+                    "complexity_points": r[6],
+                    "task_outcome": r[7],
+                }
+                for r in task_sample
+            ],
+        }
+    finally:
+        conn.close()
 
 
 def cmd_task(args: argparse.Namespace) -> int:
@@ -1723,83 +1726,86 @@ def cmd_task(args: argparse.Namespace) -> int:
 
 def task_run_details(repo: str, task_id: str) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    _require_current_schema(conn, repo)
-    rows = conn.execute(
-        """
-        SELECT
-          run_id, task_id, session_branch, task_text, task_outcome,
-          started_at, ended_at, duration_seconds, complexity_points,
-          token_confidence, attribution_method,
-          tokens_total, tokens_claude, tokens_codex,
-          tokens_prompt_completion, tokens_cache,
-          commit_sha, files_changed, insertions, deletions
-        FROM v_task_kpi
-        WHERE repo = ? AND task_id = ?
-        ORDER BY started_at ASC
-        """,
-        (repo, task_id),
-    ).fetchall()
-    if not rows:
-        raise SystemExit(f"no task run found for task_id={task_id}")
+    try:
+        _require_current_schema(conn, repo)
+        rows = conn.execute(
+            """
+            SELECT
+              run_id, task_id, session_branch, task_text, task_outcome,
+              started_at, ended_at, duration_seconds, complexity_points,
+              token_confidence, attribution_method,
+              tokens_total, tokens_claude, tokens_codex,
+              tokens_prompt_completion, tokens_cache,
+              commit_sha, files_changed, insertions, deletions
+            FROM v_task_kpi
+            WHERE repo = ? AND task_id = ?
+            ORDER BY started_at ASC
+            """,
+            (repo, task_id),
+        ).fetchall()
+        if not rows:
+            raise SystemExit(f"no task run found for task_id={task_id}")
 
-    evts = conn.execute(
-        """
-        SELECT event_type, session_branch, session_id, conversation_id, worker_branch,
-               status, task_text, complexity_points, task_outcome, timestamp
-        FROM task_events
-        WHERE repo = ? AND task_id = ?
-        ORDER BY timestamp ASC
-        """,
-        (repo, task_id),
-    ).fetchall()
-    return {
-        "repo": repo,
-        "task_id": task_id,
-        "runs": [
-            {
-                "run_id": r[0],
-                "task_id": r[1],
-                "session_branch": r[2],
-                "task_text": r[3],
-                "task_outcome": r[4],
-                "started_at": r[5],
-                "ended_at": r[6],
-                "duration_seconds": r[7],
-                "complexity_points": r[8],
-                "token_confidence": r[9],
-                "attribution_method": r[10],
-                "tokens": {
-                    "total": int(r[11] or 0),
-                    "claude": int(r[12] or 0),
-                    "codex": int(r[13] or 0),
-                    "prompt_completion": int(r[14] or 0),
-                    "cache": int(r[15] or 0),
-                },
-                "artifact": {
-                    "commit_sha": r[16],
-                    "files_changed": r[17],
-                    "insertions": r[18],
-                    "deletions": r[19],
-                },
-            }
-            for r in rows
-        ],
-        "events": [
-            {
-                "event_type": e[0],
-                "session_branch": e[1],
-                "session_id": e[2],
-                "conversation_id": e[3],
-                "worker_branch": e[4],
-                "status": e[5],
-                "task_text": e[6],
-                "complexity_points": e[7],
-                "task_outcome": e[8],
-                "timestamp": e[9],
-            }
-            for e in evts
-        ],
-    }
+        evts = conn.execute(
+            """
+            SELECT event_type, session_branch, session_id, conversation_id, worker_branch,
+                   status, task_text, complexity_points, task_outcome, timestamp
+            FROM task_events
+            WHERE repo = ? AND task_id = ?
+            ORDER BY timestamp ASC
+            """,
+            (repo, task_id),
+        ).fetchall()
+        return {
+            "repo": repo,
+            "task_id": task_id,
+            "runs": [
+                {
+                    "run_id": r[0],
+                    "task_id": r[1],
+                    "session_branch": r[2],
+                    "task_text": r[3],
+                    "task_outcome": r[4],
+                    "started_at": r[5],
+                    "ended_at": r[6],
+                    "duration_seconds": r[7],
+                    "complexity_points": r[8],
+                    "token_confidence": r[9],
+                    "attribution_method": r[10],
+                    "tokens": {
+                        "total": int(r[11] or 0),
+                        "claude": int(r[12] or 0),
+                        "codex": int(r[13] or 0),
+                        "prompt_completion": int(r[14] or 0),
+                        "cache": int(r[15] or 0),
+                    },
+                    "artifact": {
+                        "commit_sha": r[16],
+                        "files_changed": r[17],
+                        "insertions": r[18],
+                        "deletions": r[19],
+                    },
+                }
+                for r in rows
+            ],
+            "events": [
+                {
+                    "event_type": e[0],
+                    "session_branch": e[1],
+                    "session_id": e[2],
+                    "conversation_id": e[3],
+                    "worker_branch": e[4],
+                    "status": e[5],
+                    "task_text": e[6],
+                    "complexity_points": e[7],
+                    "task_outcome": e[8],
+                    "timestamp": e[9],
+                }
+                for e in evts
+            ],
+        }
+    finally:
+        conn.close()
 
 
 def inspect_task_run(repo: str, task_id: str) -> dict[str, Any]:
@@ -1811,6 +1817,178 @@ def inspect_task_run(repo: str, task_id: str) -> dict[str, Any]:
         "event_count": len(details["events"]),
         "latest_run": latest_run,
     }
+
+
+def list_task_runs(
+    repo: str,
+    window_days: int = 7,
+    since: str | None = None,
+    *,
+    limit: int = 50,
+    task_outcome: str | None = None,
+    search_text: str | None = None,
+    complexity_min: int | None = None,
+    complexity_max: int | None = None,
+) -> dict[str, Any]:
+    conn = _open_db(db_path(repo), "read")
+    try:
+        _require_current_schema(conn, repo)
+        cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
+
+        clauses = ["repo = ?", "started_at >= ?"]
+        params: list[Any] = [repo, cutoff]
+
+        if task_outcome:
+            clauses.append("COALESCE(task_outcome, 'other') = ?")
+            params.append(task_outcome)
+        if search_text:
+            needle = f"%{search_text.lower()}%"
+            clauses.append(
+                """(
+                    LOWER(task_id) LIKE ?
+                    OR LOWER(COALESCE(session_branch, '')) LIKE ?
+                    OR LOWER(COALESCE(task_text, '')) LIKE ?
+                )"""
+            )
+            params.extend([needle, needle, needle])
+        if complexity_min is not None:
+            clauses.append("COALESCE(complexity_points, 0) >= ?")
+            params.append(int(complexity_min))
+        if complexity_max is not None:
+            clauses.append("COALESCE(complexity_points, 0) <= ?")
+            params.append(int(complexity_max))
+
+        where_sql = " AND ".join(clauses)
+        count_sql = f"SELECT COUNT(*) FROM v_task_kpi WHERE {where_sql}"
+        total_runs = int(conn.execute(count_sql, tuple(params)).fetchone()[0])
+
+        query = f"""
+            SELECT
+              task_id,
+              session_branch,
+              task_text,
+              task_outcome,
+              started_at,
+              ended_at,
+              duration_seconds,
+              complexity_points,
+              token_confidence,
+              attribution_method,
+              tokens_total,
+              tokens_claude,
+              tokens_codex,
+              tokens_prompt_completion,
+              tokens_cache,
+              commit_sha,
+              files_changed,
+              insertions,
+              deletions
+            FROM v_task_kpi
+            WHERE {where_sql}
+            ORDER BY started_at DESC
+            LIMIT ?
+        """
+        rows = conn.execute(query, tuple([*params, int(limit)])).fetchall()
+        return {
+            "repo": repo,
+            "window_days": window_days,
+            "since": since,
+            "filters": {
+                "task_outcome": task_outcome,
+                "search_text": search_text,
+                "complexity_min": complexity_min,
+                "complexity_max": complexity_max,
+                "limit": int(limit),
+            },
+            "total_runs": total_runs,
+            "task_runs": [
+                {
+                    "task_id": row[0],
+                    "session_branch": row[1],
+                    "task_text": row[2],
+                    "task_outcome": row[3],
+                    "started_at": row[4],
+                    "ended_at": row[5],
+                    "duration_seconds": round(float(row[6] or 0.0), 2),
+                    "complexity_points": row[7],
+                    "token_confidence": row[8],
+                    "attribution_method": row[9],
+                    "tokens": {
+                        "total": int(row[10] or 0),
+                        "claude": int(row[11] or 0),
+                        "codex": int(row[12] or 0),
+                        "prompt_completion": int(row[13] or 0),
+                        "cache": int(row[14] or 0),
+                    },
+                    "artifact": {
+                        "commit_sha": row[15],
+                        "files_changed": int(row[16] or 0),
+                        "insertions": int(row[17] or 0),
+                        "deletions": int(row[18] or 0),
+                    },
+                }
+                for row in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def tui_snapshot(
+    repo: str,
+    window_days: int = 7,
+    since: str | None = None,
+    *,
+    hotspot_limit: int = 12,
+    warn_avg_tokens: int = 25000,
+    task_limit: int = 50,
+    provider: str | None = None,
+    task_outcome: str | None = None,
+    search_text: str | None = None,
+    complexity_min: int | None = None,
+    complexity_max: int | None = None,
+) -> dict[str, Any]:
+    hotspot_data = hotspots_telemetry(repo, window_days, since, hotspot_limit, warn_avg_tokens)
+    if provider and provider != "all":
+        hotspot_data = {
+            **hotspot_data,
+            "hotspots": [row for row in hotspot_data["hotspots"] if row["provider"] == provider],
+            "soft_warnings": [row for row in hotspot_data["soft_warnings"] if row["provider"] == provider],
+        }
+
+    return {
+        "repo": repo,
+        "window_days": window_days,
+        "since": since,
+        "filters": {
+            "provider": provider,
+            "task_outcome": task_outcome,
+            "search_text": search_text,
+            "complexity_min": complexity_min,
+            "complexity_max": complexity_max,
+            "task_limit": int(task_limit),
+            "hotspot_limit": int(hotspot_limit),
+            "warn_avg_tokens": int(warn_avg_tokens),
+        },
+        "summary": report_telemetry(repo, window_days, since),
+        "trends": trend_telemetry(repo, window_days, since),
+        "hotspots": hotspot_data,
+        "inspect": inspect_telemetry(repo),
+        "task_runs": list_task_runs(
+            repo,
+            window_days,
+            since,
+            limit=task_limit,
+            task_outcome=task_outcome,
+            search_text=search_text,
+            complexity_min=complexity_min,
+            complexity_max=complexity_max,
+        ),
+    }
+
+
+def tui_task_detail(repo: str, task_id: str) -> dict[str, Any]:
+    return inspect_task_run(repo, task_id)
 
 
 def _cutoff_from_args(args: argparse.Namespace) -> float:
@@ -1834,43 +2012,46 @@ def cmd_trend(args: argparse.Namespace) -> int:
 
 def trend_telemetry(repo: str, window_days: int = 30, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    _require_current_schema(conn, repo)
-    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
+    try:
+        _require_current_schema(conn, repo)
+        cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
-    rows = conn.execute(
-        """
-        SELECT
-          date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
-          COUNT(*) AS tasks,
-          COALESCE(SUM(tokens_total), 0) AS tokens_total,
-          COALESCE(AVG(duration_seconds), 0) AS avg_duration_s,
-          COALESCE(SUM(insertions + deletions), 0) AS loc_changed
-        FROM v_task_kpi
-        WHERE repo = ? AND COALESCE(ended_at, started_at) >= ?
-        GROUP BY day
-        ORDER BY day ASC
-        """,
-        (repo, cutoff),
-    ).fetchall()
+        rows = conn.execute(
+            """
+            SELECT
+              date(datetime(COALESCE(ended_at, started_at), 'unixepoch')) AS day,
+              COUNT(*) AS tasks,
+              COALESCE(SUM(tokens_total), 0) AS tokens_total,
+              COALESCE(AVG(duration_seconds), 0) AS avg_duration_s,
+              COALESCE(SUM(insertions + deletions), 0) AS loc_changed
+            FROM v_task_kpi
+            WHERE repo = ? AND COALESCE(ended_at, started_at) >= ?
+            GROUP BY day
+            ORDER BY day ASC
+            """,
+            (repo, cutoff),
+        ).fetchall()
 
-    days = [
-        {
-            "day": r[0],
-            "tasks": int(r[1]),
-            "tokens_total": int(r[2]),
-            "avg_duration_s": round(float(r[3] or 0.0), 2),
-            "loc_changed": int(r[4]),
+        days = [
+            {
+                "day": r[0],
+                "tasks": int(r[1]),
+                "tokens_total": int(r[2]),
+                "avg_duration_s": round(float(r[3] or 0.0), 2),
+                "loc_changed": int(r[4]),
+            }
+            for r in rows
+        ]
+        return {
+            "repo": repo,
+            "window_days": window_days,
+            "since": since,
+            "days": days,
+            "total_tasks": sum(d["tasks"] for d in days),
+            "total_tokens": sum(d["tokens_total"] for d in days),
         }
-        for r in rows
-    ]
-    return {
-        "repo": repo,
-        "window_days": window_days,
-        "since": since,
-        "days": days,
-        "total_tasks": sum(d["tasks"] for d in days),
-        "total_tokens": sum(d["tokens_total"] for d in days),
-    }
+    finally:
+        conn.close()
 
 
 def cmd_hotspots(args: argparse.Namespace) -> int:
@@ -1898,106 +2079,112 @@ def hotspots_telemetry(
     warn_avg_tokens: int = 25000,
 ) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    _require_current_schema(conn, repo)
-    cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
+    try:
+        _require_current_schema(conn, repo)
+        cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
-    rows = conn.execute(
-        """
-        SELECT provider, tool_name, COUNT(*) AS calls
-        FROM tool_calls
-        WHERE repo = ? AND timestamp >= ?
-        GROUP BY provider, tool_name
-        ORDER BY calls DESC
-        LIMIT ?
-        """,
-        (repo, cutoff, limit),
-    ).fetchall()
-
-    per_tool: list[dict[str, Any]] = []
-    for provider, tool_name, calls in rows:
-        tokens = conn.execute(
+        rows = conn.execute(
             """
-            SELECT
-              COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_create_tokens), 0)
-            FROM usage_events u
-            JOIN tool_calls t
-              ON t.repo = u.repo
-             AND t.provider = u.provider
-             AND IFNULL(t.message_uuid, '') = IFNULL(u.message_uuid, '')
-             AND IFNULL(t.session_id, '') = IFNULL(u.session_id, '')
-            WHERE u.repo = ? AND t.provider = ? AND t.tool_name = ? AND u.timestamp >= ?
+            SELECT provider, tool_name, COUNT(*) AS calls
+            FROM tool_calls
+            WHERE repo = ? AND timestamp >= ?
+            GROUP BY provider, tool_name
+            ORDER BY calls DESC
+            LIMIT ?
             """,
-            (repo, provider, tool_name, cutoff),
-        ).fetchone()[0]
+            (repo, cutoff, limit),
+        ).fetchall()
 
-        per_tool.append(
-            {
-                "provider": provider,
-                "tool_name": tool_name,
-                "calls": int(calls),
-                "estimated_tokens": int(tokens or 0),
-                "avg_tokens_per_call": round((tokens / calls), 2) if calls else 0,
-            }
-        )
+        per_tool: list[dict[str, Any]] = []
+        for provider, tool_name, calls in rows:
+            tokens = conn.execute(
+                """
+                SELECT
+                  COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_create_tokens), 0)
+                FROM usage_events u
+                JOIN tool_calls t
+                  ON t.repo = u.repo
+                 AND t.provider = u.provider
+                 AND IFNULL(t.message_uuid, '') = IFNULL(u.message_uuid, '')
+                 AND IFNULL(t.session_id, '') = IFNULL(u.session_id, '')
+                WHERE u.repo = ? AND t.provider = ? AND t.tool_name = ? AND u.timestamp >= ?
+                """,
+                (repo, provider, tool_name, cutoff),
+            ).fetchone()[0]
 
-    warn = [t for t in per_tool if t["avg_tokens_per_call"] > warn_avg_tokens]
-    return {
-        "repo": repo,
-        "window_days": window_days,
-        "since": since,
-        "hotspots": per_tool,
-        "soft_warnings": warn,
-        "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
-    }
+            per_tool.append(
+                {
+                    "provider": provider,
+                    "tool_name": tool_name,
+                    "calls": int(calls),
+                    "estimated_tokens": int(tokens or 0),
+                    "avg_tokens_per_call": round((tokens / calls), 2) if calls else 0,
+                }
+            )
+
+        warn = [t for t in per_tool if t["avg_tokens_per_call"] > warn_avg_tokens]
+        return {
+            "repo": repo,
+            "window_days": window_days,
+            "since": since,
+            "hotspots": per_tool,
+            "soft_warnings": warn,
+            "suggestion": "tighten allowlist for tools with high avg_tokens_per_call",
+        }
+    finally:
+        conn.close()
 
 
 def inspect_telemetry(repo: str) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
-    legacy_missing = _legacy_schema_gaps(conn)
-    counts = {
-        "usage_events": conn.execute("SELECT COUNT(*) FROM usage_events WHERE repo = ?", (repo,)).fetchone()[0],
-        "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls WHERE repo = ?", (repo,)).fetchone()[0],
-        "task_events": conn.execute("SELECT COUNT(*) FROM task_events WHERE repo = ?", (repo,)).fetchone()[0],
-        "task_runs": (
-            conn.execute("SELECT COUNT(*) FROM task_runs WHERE repo = ?", (repo,)).fetchone()[0]
-            if _sqlite_object_exists(conn, "task_runs", "table")
-            else None
-        ),
-        "task_artifacts": (
-            conn.execute("SELECT COUNT(*) FROM task_artifacts WHERE repo = ?", (repo,)).fetchone()[0]
-            if _sqlite_object_exists(conn, "task_artifacts", "table")
-            else None
-        ),
-    }
-    checkpoints: list[dict[str, Any]] = []
-    if _sqlite_object_exists(conn, "ingest_checkpoints", "table"):
-        checkpoints = [
-            {
-                "source_key": row[0],
-                "cursor": row[1],
-                "file_inode": row[2],
-                "file_size": row[3],
-                "file_mtime": row[4],
-                "updated_at": row[5],
-            }
-            for row in conn.execute(
-                """
-                SELECT source_key, cursor, file_inode, file_size, file_mtime, updated_at
-                FROM ingest_checkpoints
-                WHERE repo = ?
-                ORDER BY source_key ASC
-                """,
-                (repo,),
-            ).fetchall()
-        ]
-    return {
-        "repo": repo,
-        "db_path": db_path(repo),
-        "counts": counts,
-        "checkpoints": checkpoints,
-        "migration_required": bool(legacy_missing),
-        "legacy_schema_missing": legacy_missing,
-    }
+    try:
+        legacy_missing = _legacy_schema_gaps(conn)
+        counts = {
+            "usage_events": conn.execute("SELECT COUNT(*) FROM usage_events WHERE repo = ?", (repo,)).fetchone()[0],
+            "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls WHERE repo = ?", (repo,)).fetchone()[0],
+            "task_events": conn.execute("SELECT COUNT(*) FROM task_events WHERE repo = ?", (repo,)).fetchone()[0],
+            "task_runs": (
+                conn.execute("SELECT COUNT(*) FROM task_runs WHERE repo = ?", (repo,)).fetchone()[0]
+                if _sqlite_object_exists(conn, "task_runs", "table")
+                else None
+            ),
+            "task_artifacts": (
+                conn.execute("SELECT COUNT(*) FROM task_artifacts WHERE repo = ?", (repo,)).fetchone()[0]
+                if _sqlite_object_exists(conn, "task_artifacts", "table")
+                else None
+            ),
+        }
+        checkpoints: list[dict[str, Any]] = []
+        if _sqlite_object_exists(conn, "ingest_checkpoints", "table"):
+            checkpoints = [
+                {
+                    "source_key": row[0],
+                    "cursor": row[1],
+                    "file_inode": row[2],
+                    "file_size": row[3],
+                    "file_mtime": row[4],
+                    "updated_at": row[5],
+                }
+                for row in conn.execute(
+                    """
+                    SELECT source_key, cursor, file_inode, file_size, file_mtime, updated_at
+                    FROM ingest_checkpoints
+                    WHERE repo = ?
+                    ORDER BY source_key ASC
+                    """,
+                    (repo,),
+                ).fetchall()
+            ]
+        return {
+            "repo": repo,
+            "db_path": db_path(repo),
+            "counts": counts,
+            "checkpoints": checkpoints,
+            "migration_required": bool(legacy_missing),
+            "legacy_schema_missing": legacy_missing,
+        }
+    finally:
+        conn.close()
 
 
 def append_event(events_path: str, event_type: str, fields: dict[str, Any]) -> dict[str, Any]:

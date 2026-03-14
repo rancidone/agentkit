@@ -1,0 +1,7 @@
+{
+  "index": {
+    "exclude_paths": [
+      ".agentkit/state"
+    ]
+  }
+}

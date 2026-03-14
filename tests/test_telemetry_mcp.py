@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 
-from tests.test_cli_telemetry import make_tmp_telemetry_env
+from tests.test_cli_telemetry import make_tmp_telemetry_env, write_usage_log
 from tests.conftest import make_tmp_repo
 from agentkit_common import repo_id
 
@@ -60,6 +60,7 @@ class TestTelemetryMcpServer(unittest.TestCase):
         data = json.loads(result.stdout)
         self.assertEqual(data["name"], "agentkit-telemetry-mcp")
         self.assertIn("telemetry.inspect", data["owned_capabilities"])
+        self.assertIn("tui.snapshot", data["owned_capabilities"])
 
     def test_stdio_lists_expected_tools(self):
         payload = b"".join(
@@ -87,6 +88,8 @@ class TestTelemetryMcpServer(unittest.TestCase):
                 "telemetry.trend",
                 "telemetry.inspect",
                 "task.inspect",
+                "tui.snapshot",
+                "tui.task_detail",
                 "task.log_started",
                 "task.log_completed",
                 "task.log_failed",
@@ -235,6 +238,177 @@ class TestTelemetryMcpServer(unittest.TestCase):
         self.assertEqual(task_data["run_count"], 1)
         self.assertEqual(task_data["event_count"], 2)
         self.assertEqual(task_data["latest_run"]["task_id"], "phase2-inspect")
+
+    def test_stdio_can_return_tui_snapshot(self):
+        write_usage_log(pathlib.Path(self.fixtures["codex_home"]), "codex.jsonl", self.repo, 22)
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_started",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-snapshot",
+                                "session_branch": "todo/test",
+                                "task_text": "Test telemetry MCP snapshot",
+                                "complexity_points": 4,
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_completed",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-snapshot",
+                                "session_branch": "todo/test",
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "telemetry.ingest",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "claude_home": self.fixtures["claude_home"],
+                                "codex_home": self.fixtures["codex_home"],
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "tui.snapshot",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "provider": "codex",
+                                "task_outcome": "completed",
+                                "search_text": "snapshot",
+                                "complexity_min": 3,
+                                "task_limit": 5,
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        snapshot = _parse_frames(result.stdout)[4]["result"]["structuredContent"]
+        self.assertEqual(snapshot["filters"]["provider"], "codex")
+        self.assertEqual(snapshot["filters"]["task_outcome"], "completed")
+        self.assertIn("summary", snapshot)
+        self.assertIn("trends", snapshot)
+        self.assertIn("hotspots", snapshot)
+        self.assertIn("inspect", snapshot)
+        self.assertIn("task_runs", snapshot)
+        self.assertEqual(snapshot["task_runs"]["total_runs"], 1)
+        self.assertEqual(snapshot["task_runs"]["task_runs"][0]["task_id"], "phase2-snapshot")
+
+    def test_stdio_can_return_tui_task_detail(self):
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_started",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-tui-detail",
+                                "session_branch": "todo/test",
+                                "task_text": "Test telemetry MCP TUI detail",
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "task.log_completed",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "task_id": "phase2-tui-detail",
+                                "session_branch": "todo/test",
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "telemetry.ingest",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "claude_home": self.fixtures["claude_home"],
+                                "codex_home": self.fixtures["codex_home"],
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "tui.task_detail",
+                            "arguments": {"repo": str(self.repo), "task_id": "phase2-tui-detail"},
+                        },
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        detail = _parse_frames(result.stdout)[4]["result"]["structuredContent"]
+        self.assertEqual(detail["task_id"], "phase2-tui-detail")
+        self.assertEqual(detail["run_count"], 1)
+        self.assertEqual(detail["latest_run"]["task_id"], "phase2-tui-detail")
 
     def test_mcp_ingest_matches_cli_output(self):
         cli = subprocess.run(
