@@ -29,6 +29,7 @@ class TestSkillWorkflowDocs(unittest.TestCase):
             "Tasks-first remains the default execution mode",
             "Task lifecycle logging remains available for repo self-use",
             "Index refresh and telemetry refresh/report steps remain part of the repo's own TODO execution flow",
+            "write or update the relevant automated test first",
             "Do not emit worker lifecycle events in tasks-first mode",
             "task.log_failed",
             "task.log_completed",

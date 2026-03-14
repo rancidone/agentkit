@@ -21,6 +21,10 @@ def install_manifest_path() -> Path:
     return _data_home() / "agentkit" / "install-manifest.json"
 
 
+def managed_helper_bin_path() -> Path:
+    return Path.home() / ".local" / "bin"
+
+
 def managed_codex_config_path(codex_home: Path) -> Path:
     return codex_home / "agentkit" / "mcp-servers.json"
 
@@ -95,6 +99,14 @@ def legacy_wrapper_names() -> list[str]:
     ]
 
 
+def compatibility_helper_names() -> list[str]:
+    return [
+        "agent-validate-command-docs",
+        "agent-session-branch",
+        "agent-commit-files",
+    ]
+
+
 def build_managed_mcp_config(repo_root: Path) -> dict[str, Any]:
     return {
         "mcpServers": {
@@ -121,6 +133,7 @@ def install_agentkit(
     claude_skill = claude_home / "skills" / "agentkit-todo-claude"
     codex_config = managed_codex_config_path(codex_home)
     claude_config = managed_claude_config_path(claude_home)
+    helper_bin_dir = managed_helper_bin_path()
     manifest_path = install_manifest_path()
 
     _symlink(repo_root / "skills" / "agentkit-todo-codex", codex_skill)
@@ -130,12 +143,26 @@ def install_agentkit(
     _write_json(codex_config, config_payload)
     _write_json(claude_config, config_payload)
 
+    helper_artifacts: list[dict[str, str]] = []
+    for name in compatibility_helper_names():
+        link_path = helper_bin_dir / name
+        target = repo_root / name
+        _symlink(target, link_path)
+        helper_artifacts.append(
+            {
+                "type": "helper_link",
+                "path": str(link_path),
+                "target": str(target),
+            }
+        )
+
     artifacts: list[dict[str, str]] = [
         {"type": "skill_link", "path": str(codex_skill), "target": str(repo_root / "skills" / "agentkit-todo-codex")},
         {"type": "skill_link", "path": str(claude_skill), "target": str(repo_root / "skills" / "agentkit-todo-claude")},
         {"type": "managed_config", "path": str(codex_config)},
         {"type": "managed_config", "path": str(claude_config)},
     ]
+    artifacts.extend(helper_artifacts)
 
     manifest = {
         "schema_version": 1,
@@ -151,6 +178,8 @@ def install_agentkit(
         "claude_skill": str(claude_skill),
         "codex_mcp_config": str(codex_config),
         "claude_mcp_config": str(claude_config),
+        "helper_bin_dir": str(helper_bin_dir),
+        "helper_commands": compatibility_helper_names(),
         "artifacts_recorded": len(artifacts),
     }
 
@@ -169,7 +198,7 @@ def uninstall_agentkit(
         for artifact in manifest.get("artifacts", []):
             artifact_path = Path(artifact["path"]).expanduser()
             artifact_type = artifact.get("type")
-            if artifact_type in {"skill_link", "legacy_wrapper_link"}:
+            if artifact_type in {"skill_link", "legacy_wrapper_link", "helper_link"}:
                 target = artifact.get("target")
                 if target is None:
                     skipped.append(str(artifact_path))

@@ -262,7 +262,7 @@ Install the managed MCP config artifacts plus the supported Codex and Claude ski
 ./agent-install
 ```
 
-This writes managed MCP config files for both clients, links the Codex skill into `$CODEX_HOME/skills` (default `~/.codex/skills`), links the Claude skill into `$CLAUDE_HOME/skills` (default `~/.claude/skills`), and records every managed artifact in an install manifest.
+This writes managed MCP config files for both clients, links the Codex skill into `$CODEX_HOME/skills` (default `~/.codex/skills`), links the Claude skill into `$CLAUDE_HOME/skills` (default `~/.claude/skills`), installs compatibility helper symlinks into `~/.local/bin`, and records every managed artifact in an install manifest.
 For non-default install location:
 
 ```bash
@@ -296,7 +296,7 @@ Validate the Codex skill markdown, plus any retained legacy command markdown, wi
 ./agent-validate-command-docs .
 ```
 
-Ensure the install bin directory is on `PATH` for both your shell and Codex runtime.
+Ensure `~/.local/bin` is on `PATH` for both your shell and Codex runtime so `agent-validate-command-docs`, `agent-session-branch`, and `agent-commit-files` resolve during the TODO workflow.
 Claude command markdown is not a supported install surface anymore.
 
 ## License

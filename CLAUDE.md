@@ -21,6 +21,7 @@ Use the MCP-backed skills as the primary workflow surface for this repository.
 - Install the managed global MCP configs with `./agent-install`.
 - The default managed config paths are `~/.codex/agentkit/mcp-servers.json` and `~/.claude/agentkit/mcp-servers.json`.
 - Run `agentkit-todo-codex` or `agentkit-todo-claude` for `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+- For any non-trivial or behavior-affecting change, write or update the relevant automated test first, confirm it covers the intended contract, then implement the logic and rerun the affected test scope before closing the task.
 
 ## Local Helper Commands
 

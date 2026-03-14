@@ -8,6 +8,7 @@ These skills must preserve the repo's current dogfooding semantics during migrat
 1. Tasks-first remains the default execution mode unless explicitly changed later.
 2. Task lifecycle logging remains available for repo self-use.
 3. Index refresh and telemetry refresh/report steps remain part of the repo's own TODO execution flow.
+4. For any non-trivial or behavior-affecting change, write or update the relevant automated test first, confirm it exercises the intended contract, then implement the logic and rerun the affected test scope before closing the task.
 
 ## start-todo
 

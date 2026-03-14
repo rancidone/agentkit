@@ -26,6 +26,7 @@ class TestAgentInstall(unittest.TestCase):
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             result = subprocess.run(
@@ -46,6 +47,7 @@ class TestAgentInstall(unittest.TestCase):
             artifact_types = {artifact["type"] for artifact in manifest["artifacts"]}
             self.assertIn("skill_link", artifact_types)
             self.assertIn("managed_config", artifact_types)
+            self.assertIn("helper_link", artifact_types)
 
             codex_skill = codex_home / "skills" / "agentkit-todo-codex"
             claude_skill = claude_home / "skills" / "agentkit-todo-claude"
@@ -62,6 +64,17 @@ class TestAgentInstall(unittest.TestCase):
             self.assertIn("agentkit-repo-mcp", codex_payload["mcpServers"])
             self.assertIn("agentkit-telemetry-mcp", codex_payload["mcpServers"])
 
+            helper_bin_dir = tmp_path / ".local" / "bin"
+            self.assertEqual(pathlib.Path(data["helper_bin_dir"]), helper_bin_dir)
+            self.assertEqual(
+                data["helper_commands"],
+                ["agent-validate-command-docs", "agent-session-branch", "agent-commit-files"],
+            )
+            for name in data["helper_commands"]:
+                link_path = helper_bin_dir / name
+                self.assertTrue(link_path.is_symlink())
+                self.assertEqual(link_path.resolve(), REPO_ROOT / name)
+
     def test_install_rejects_legacy_wrapper_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -74,6 +87,7 @@ class TestAgentInstall(unittest.TestCase):
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             result = subprocess.run(
@@ -86,31 +100,33 @@ class TestAgentInstall(unittest.TestCase):
             self.assertIn("unrecognized arguments: --legacy-bin-dir", result.stderr)
             self.assertFalse((xdg_data_home / "agentkit" / "install-manifest.json").exists())
 
-    def test_deprecated_global_tools_shim_no_longer_installs_wrappers(self):
+    def test_deprecated_global_tools_shim_installs_required_helper_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             codex_home = tmp_path / "codex"
             claude_home = tmp_path / "claude"
             xdg_data_home = tmp_path / "data"
-            bin_dir = tmp_path / "bin"
             env = {
                 **os.environ,
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             result = subprocess.run(
-                [str(REPO_ROOT / "agent-install-global-tools"), str(bin_dir)],
+                [str(REPO_ROOT / "agent-install-global-tools")],
                 capture_output=True,
                 text=True,
                 check=True,
                 env=env,
             )
-            self.assertIn("no longer the default", result.stderr)
-            self.assertFalse((bin_dir / "agentkit").exists())
+            self.assertIn("deprecated", result.stderr)
             manifest = json.loads((xdg_data_home / "agentkit" / "install-manifest.json").read_text(encoding="utf-8"))
-            self.assertFalse(any(artifact["type"] == "legacy_wrapper_link" for artifact in manifest["artifacts"]))
+            helper_artifacts = [artifact for artifact in manifest["artifacts"] if artifact["type"] == "helper_link"]
+            self.assertEqual(len(helper_artifacts), 3)
+            for artifact in helper_artifacts:
+                self.assertTrue(pathlib.Path(artifact["path"]).is_symlink())
 
     def test_uninstall_removes_managed_artifacts_and_manifest_only(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,6 +139,7 @@ class TestAgentInstall(unittest.TestCase):
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             subprocess.run(
@@ -158,6 +175,10 @@ class TestAgentInstall(unittest.TestCase):
             self.assertFalse((claude_home / "skills" / "agentkit-todo-claude").exists())
             self.assertFalse((codex_home / "agentkit" / "mcp-servers.json").exists())
             self.assertFalse((claude_home / "agentkit" / "mcp-servers.json").exists())
+            helper_bin_dir = tmp_path / ".local" / "bin"
+            self.assertFalse((helper_bin_dir / "agent-validate-command-docs").exists())
+            self.assertFalse((helper_bin_dir / "agent-session-branch").exists())
+            self.assertFalse((helper_bin_dir / "agent-commit-files").exists())
             self.assertTrue(telemetry_db.exists())
             self.assertTrue(events_file.exists())
             self.assertTrue(copied_script.exists())
@@ -173,6 +194,7 @@ class TestAgentInstall(unittest.TestCase):
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             subprocess.run(
@@ -217,6 +239,7 @@ class TestAgentInstall(unittest.TestCase):
                 "CODEX_HOME": str(codex_home),
                 "CLAUDE_HOME": str(claude_home),
                 "XDG_DATA_HOME": str(xdg_data_home),
+                "HOME": str(tmp_path),
             }
 
             legacy_bin_dir.mkdir()
