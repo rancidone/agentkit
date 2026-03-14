@@ -44,6 +44,3 @@ pip-wheel-metadata/
 
 # local docs
 .docs/
-
-# local planning files
-TODO.md
