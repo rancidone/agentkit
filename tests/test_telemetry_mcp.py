@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import unittest
 
 from tests.test_cli_telemetry import make_tmp_telemetry_env
 from tests.conftest import make_tmp_repo
+from agentkit_common import repo_id
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 AGENTKIT_TELEMETRY_MCP = str(REPO_ROOT / "agentkit-telemetry-mcp")
@@ -78,6 +80,7 @@ class TestTelemetryMcpServer(unittest.TestCase):
         self.assertEqual(
             tool_names,
             [
+                "telemetry.migrate",
                 "telemetry.ingest",
                 "telemetry.report",
                 "telemetry.hotspots",
@@ -284,6 +287,110 @@ class TestTelemetryMcpServer(unittest.TestCase):
         )
         mcp_data = _parse_frames(result.stdout)[1]["result"]["structuredContent"]
         self.assertEqual(mcp_data, cli_data)
+
+    def test_mcp_migrate_upgrades_legacy_db(self):
+        db = pathlib.Path(self.fixtures["state_dir"]) / f"telemetry-{repo_id(str(self.repo))}.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """
+            CREATE TABLE task_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              repo TEXT NOT NULL,
+              task_id TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              session_branch TEXT,
+              worker_branch TEXT,
+              status TEXT,
+              timestamp REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE usage_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              repo TEXT NOT NULL,
+              session_id TEXT,
+              branch TEXT,
+              message_uuid TEXT,
+              timestamp REAL,
+              model TEXT,
+              input_tokens INTEGER NOT NULL DEFAULT 0,
+              output_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_create_tokens INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE tool_calls (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              repo TEXT NOT NULL,
+              session_id TEXT,
+              message_uuid TEXT,
+              timestamp REAL,
+              tool_name TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+        pathlib.Path(self.fixtures["events_file"]).write_text(
+            json.dumps(
+                {
+                    "event_type": "task_completed",
+                    "timestamp": "2026-03-14T10:05:00Z",
+                    "repo": ".",
+                    "session_branch": "todo/test",
+                    "task_id": "legacy-mcp",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        payload = b"".join(
+            [
+                _frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "telemetry.migrate",
+                            "arguments": {
+                                "repo": str(self.repo),
+                                "claude_home": self.fixtures["claude_home"],
+                                "codex_home": self.fixtures["codex_home"],
+                                "events": self.fixtures["events_file"],
+                            },
+                        },
+                    }
+                ),
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {"name": "telemetry.report", "arguments": {"repo": str(self.repo)}},
+                    }
+                ),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, AGENTKIT_TELEMETRY_MCP],
+            input=payload,
+            capture_output=True,
+            check=True,
+            env=self.env,
+        )
+        messages = _parse_frames(result.stdout)
+        migrate = messages[1]["result"]["structuredContent"]
+        report = messages[2]["result"]["structuredContent"]
+        self.assertEqual(migrate["mode"], "migrate")
+        self.assertEqual(report["completed_tasks"], 1)
 
     def test_mcp_report_matches_cli_output(self):
         subprocess.run(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+from agentkit_common import repo_id
 from tests.conftest import make_tmp_repo
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -59,6 +61,57 @@ def write_usage_log(root: pathlib.Path, filename: str, repo: pathlib.Path, input
         },
     }
     (log_dir / filename).write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+
+def write_legacy_telemetry_db(state_dir: pathlib.Path, repo: pathlib.Path) -> pathlib.Path:
+    db = state_dir / f"telemetry-{repo_id(str(repo))}.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE usage_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          session_id TEXT,
+          branch TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          model TEXT,
+          input_tokens INTEGER NOT NULL DEFAULT 0,
+          output_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+          cache_create_tokens INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE tool_calls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          session_id TEXT,
+          message_uuid TEXT,
+          timestamp REAL,
+          tool_name TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE task_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          session_branch TEXT,
+          worker_branch TEXT,
+          status TEXT,
+          timestamp REAL NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
 
 
 class TestAgentTelemetryIngest(unittest.TestCase):
@@ -268,6 +321,100 @@ class TestAgentTelemetryReport(unittest.TestCase):
         )
         data = json.loads(result.stdout)
         self.assertIn("repo", data)
+
+
+class TestAgentTelemetryMigrate(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.repo = make_tmp_repo(self.tmp / "repo")
+        self.fixtures = make_tmp_telemetry_env(self.tmp, self.repo)
+        self.env = {
+            **os.environ,
+            "AGENTKIT_STATE_DIR": self.fixtures["state_dir"],
+        }
+        write_legacy_telemetry_db(pathlib.Path(self.fixtures["state_dir"]), self.repo)
+        pathlib.Path(self.fixtures["events_file"]).write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "event_type": "task_started",
+                            "timestamp": "2026-03-14T10:00:00Z",
+                            "repo": ".",
+                            "session_branch": "todo/test",
+                            "task_id": "legacy-task",
+                            "task_text": "Migrate a legacy telemetry DB",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "event_type": "task_completed",
+                            "timestamp": "2026-03-14T10:05:00Z",
+                            "repo": ".",
+                            "session_branch": "todo/test",
+                            "task_id": "legacy-task",
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_report_on_legacy_db_returns_migration_hint(self):
+        result = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "report", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("legacy telemetry DB", result.stderr)
+        self.assertIn("agent-telemetry migrate", result.stderr)
+
+    def test_migrate_upgrades_legacy_db_and_recovers_relative_repo_events(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                AGENT_TELEMETRY,
+                "migrate",
+                "--repo",
+                str(self.repo),
+                "--claude-home",
+                self.fixtures["claude_home"],
+                "--codex-home",
+                self.fixtures["codex_home"],
+                "--events",
+                self.fixtures["events_file"],
+            ],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["mode"], "migrate")
+        self.assertIn("task_runs", data["legacy_schema_missing_before"])
+
+        report = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "report", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(report.returncode, 0, msg=report.stderr)
+        report_data = json.loads(report.stdout)
+        self.assertEqual(report_data["completed_tasks"], 1)
+
+        inspect = subprocess.run(
+            [sys.executable, AGENT_TELEMETRY, "task", "legacy-task", "--repo", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertEqual(inspect.returncode, 0, msg=inspect.stderr)
+        task_data = json.loads(inspect.stdout)
+        self.assertEqual(task_data["runs"][0]["task_id"], "legacy-task")
 
 
 class TestAgentTelemetryTrend(unittest.TestCase):

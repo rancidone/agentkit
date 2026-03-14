@@ -33,6 +33,7 @@ class TestServiceDefinitions(unittest.TestCase):
         self.assertNotIn("telemetry.ingest", REPO_SERVICE.owned_capabilities)
 
     def test_telemetry_service_owns_telemetry_and_task_capabilities(self):
+        self.assertIn("telemetry.migrate", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("telemetry.ingest", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("task.inspect", TELEMETRY_SERVICE.owned_capabilities)
         self.assertIn("task.log_completed", TELEMETRY_SERVICE.owned_capabilities)

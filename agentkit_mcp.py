@@ -39,6 +39,7 @@ TELEMETRY_SERVICE = ServiceDefinition(
     compatibility_path_required=True,
     backend_module="agent_telemetry_backend",
     owned_capabilities=(
+        "telemetry.migrate",
         "telemetry.ingest",
         "telemetry.report",
         "telemetry.hotspots",

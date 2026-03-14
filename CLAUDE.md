@@ -111,10 +111,12 @@ Always use `just` recipes or `agent-*` wrappers instead of composing shell comma
 ## Telemetry Model
 
 - Ingest is **incremental and non-destructive** — checkpoints track last-processed position per source log.
+- `./agent-telemetry migrate --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl` upgrades legacy telemetry DBs in place and recomputes derived tables.
 - **Single-writer coordination**: a per-repo file lock serializes concurrent ingest calls.
 - Report/hotspots/export use read-mode connections and are available during ingest.
 - Full reset: `./agent-telemetry rebuild --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl`
 - `./agent-telemetry-ingest` now auto-selects provider logs from the active runner environment. Use `AGENTKIT_TELEMETRY_SCOPE=codex`, `claude`, or `all` only when you need to override the default.
+- Legacy repos that error on `report`, `trend`, `hotspots`, or `task` should run `agent-telemetry migrate` first.
 
 ## Inspecting Agentkit State DBs
 

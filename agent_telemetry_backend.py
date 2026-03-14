@@ -30,6 +30,48 @@ def db_path(repo: str) -> str:
     return os.path.join(default_state_dir(), f"telemetry-{repo_id(repo)}.db")
 
 
+def _sqlite_object_exists(conn: sqlite3.Connection, name: str, obj_type: str | None = None) -> bool:
+    if obj_type:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?",
+            (obj_type, name),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ?",
+            (name,),
+        ).fetchone()
+    return row is not None
+
+
+def _legacy_schema_gaps(conn: sqlite3.Connection) -> list[str]:
+    required = [
+        ("table", "task_runs"),
+        ("table", "task_artifacts"),
+        ("table", "ingest_checkpoints"),
+        ("view", "v_task_kpi"),
+    ]
+    missing: list[str] = []
+    for obj_type, name in required:
+        if not _sqlite_object_exists(conn, name, obj_type):
+            missing.append(name)
+    return missing
+
+
+def _legacy_schema_message(repo: str, missing: list[str]) -> str:
+    joined = ", ".join(sorted(missing))
+    return (
+        f"legacy telemetry DB for repo '{repo}' is missing derived schema objects: {joined}. "
+        f"Run 'agent-telemetry migrate --repo {repo}' first."
+    )
+
+
+def _require_current_schema(conn: sqlite3.Connection, repo: str) -> None:
+    missing = _legacy_schema_gaps(conn)
+    if missing:
+        raise SystemExit(_legacy_schema_message(repo, missing))
+
+
 def _column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(r[1] == col for r in rows)
@@ -496,7 +538,10 @@ def _repo_matches(repo_filter: str, obj: dict[str, Any]) -> bool:
     if not candidate:
         return False
     repo_abs = os.path.abspath(repo_filter)
-    cand_abs = os.path.abspath(candidate)
+    if os.path.isabs(candidate):
+        cand_abs = os.path.abspath(candidate)
+    else:
+        cand_abs = os.path.abspath(os.path.join(repo_abs, candidate))
     return cand_abs == repo_abs or cand_abs.startswith(repo_abs + os.sep)
 
 
@@ -789,6 +834,17 @@ def _normalize_outcome(event_type: str, status: str | None) -> str | None:
     return None
 
 
+def _event_repo_matches(repo: str, event_repo: str | None) -> bool:
+    if not event_repo:
+        return True
+    repo_abs = os.path.abspath(repo)
+    if os.path.isabs(event_repo):
+        cand_abs = os.path.abspath(event_repo)
+    else:
+        cand_abs = os.path.abspath(os.path.join(repo_abs, event_repo))
+    return cand_abs == repo_abs or cand_abs.startswith(repo_abs + os.sep)
+
+
 def ingest_task_events(conn: sqlite3.Connection, repo: str, events_path: str) -> int:
     if not os.path.exists(events_path):
         return 0
@@ -813,7 +869,7 @@ def ingest_task_events(conn: sqlite3.Connection, repo: str, events_path: str) ->
             except json.JSONDecodeError:
                 continue
 
-            if obj.get("repo") and os.path.abspath(obj["repo"]) != os.path.abspath(repo):
+            if not _event_repo_matches(repo, obj.get("repo")):
                 continue
 
             task_id = obj.get("task_id")
@@ -1429,6 +1485,80 @@ def ingest_telemetry(repo: str, claude_home: str, codex_home: str, events: str) 
     }
 
 
+def migrate_telemetry(
+    repo: str,
+    claude_home: str,
+    codex_home: str,
+    events: str,
+    extra_events: list[str] | None = None,
+) -> dict[str, Any]:
+    event_paths: list[str] = []
+    for path in [events, *(extra_events or [])]:
+        if path and path not in event_paths:
+            event_paths.append(path)
+
+    db_file = db_path(repo)
+    legacy_missing: list[str] = []
+    if os.path.exists(db_file):
+        legacy_conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        try:
+            legacy_missing = _legacy_schema_gaps(legacy_conn)
+        finally:
+            legacy_conn.close()
+
+    with writer_lease(repo):
+        conn = _open_db(db_file, "write")
+
+        def _txn() -> tuple[dict[str, int], dict[str, int], int, int]:
+            claude_stats = ingest_usage_provider(conn, repo, claude_home, "claude")
+            codex_stats = ingest_usage_provider(conn, repo, codex_home, "codex")
+            task_stats = 0
+            for path in event_paths:
+                task_stats += ingest_task_events(conn, repo, path)
+            run_count = _recompute_derived_tables(conn, repo)
+            return claude_stats, codex_stats, task_stats, run_count
+
+        claude_stats, codex_stats, task_stats, run_count = _run_write_transaction(conn, _txn)
+        conn.close()
+
+    return {
+        "repo": repo,
+        "mode": "migrate",
+        "legacy_schema_missing_before": legacy_missing,
+        "usage_events_ingested": claude_stats["usage_events"] + codex_stats["usage_events"],
+        "usage_events_by_provider": {
+            "claude": claude_stats["usage_events"],
+            "codex": codex_stats["usage_events"],
+        },
+        "tool_calls_ingested": claude_stats["tool_calls"] + codex_stats["tool_calls"],
+        "tool_calls_by_provider": {
+            "claude": claude_stats["tool_calls"],
+            "codex": codex_stats["tool_calls"],
+        },
+        "task_events_ingested": task_stats,
+        "task_runs_built": run_count,
+        "incremental": True,
+        "events_paths": event_paths,
+    }
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    repo = repo_root(args.repo)
+    print(
+        json.dumps(
+            migrate_telemetry(
+                repo,
+                args.claude_home,
+                args.codex_home,
+                args.events,
+                getattr(args, "extra_events", None),
+            ),
+            indent=2,
+        )
+    )
+    return 0
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     repo = repo_root(args.repo)
     print(json.dumps(ingest_telemetry(repo, args.claude_home, args.codex_home, args.events), indent=2))
@@ -1490,6 +1620,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def report_telemetry(repo: str, window_days: int, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
+    _require_current_schema(conn, repo)
     cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     completed = conn.execute(
@@ -1592,6 +1723,7 @@ def cmd_task(args: argparse.Namespace) -> int:
 
 def task_run_details(repo: str, task_id: str) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
+    _require_current_schema(conn, repo)
     rows = conn.execute(
         """
         SELECT
@@ -1702,6 +1834,7 @@ def cmd_trend(args: argparse.Namespace) -> int:
 
 def trend_telemetry(repo: str, window_days: int = 30, since: str | None = None) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
+    _require_current_schema(conn, repo)
     cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     rows = conn.execute(
@@ -1765,6 +1898,7 @@ def hotspots_telemetry(
     warn_avg_tokens: int = 25000,
 ) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
+    _require_current_schema(conn, repo)
     cutoff = _cutoff_from_args(argparse.Namespace(window_days=window_days, since=since))
 
     rows = conn.execute(
@@ -1819,37 +1953,50 @@ def hotspots_telemetry(
 
 def inspect_telemetry(repo: str) -> dict[str, Any]:
     conn = _open_db(db_path(repo), "read")
+    legacy_missing = _legacy_schema_gaps(conn)
     counts = {
         "usage_events": conn.execute("SELECT COUNT(*) FROM usage_events WHERE repo = ?", (repo,)).fetchone()[0],
         "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls WHERE repo = ?", (repo,)).fetchone()[0],
         "task_events": conn.execute("SELECT COUNT(*) FROM task_events WHERE repo = ?", (repo,)).fetchone()[0],
-        "task_runs": conn.execute("SELECT COUNT(*) FROM task_runs WHERE repo = ?", (repo,)).fetchone()[0],
-        "task_artifacts": conn.execute("SELECT COUNT(*) FROM task_artifacts WHERE repo = ?", (repo,)).fetchone()[0],
+        "task_runs": (
+            conn.execute("SELECT COUNT(*) FROM task_runs WHERE repo = ?", (repo,)).fetchone()[0]
+            if _sqlite_object_exists(conn, "task_runs", "table")
+            else None
+        ),
+        "task_artifacts": (
+            conn.execute("SELECT COUNT(*) FROM task_artifacts WHERE repo = ?", (repo,)).fetchone()[0]
+            if _sqlite_object_exists(conn, "task_artifacts", "table")
+            else None
+        ),
     }
-    checkpoints = [
-        {
-            "source_key": row[0],
-            "cursor": row[1],
-            "file_inode": row[2],
-            "file_size": row[3],
-            "file_mtime": row[4],
-            "updated_at": row[5],
-        }
-        for row in conn.execute(
-            """
-            SELECT source_key, cursor, file_inode, file_size, file_mtime, updated_at
-            FROM ingest_checkpoints
-            WHERE repo = ?
-            ORDER BY source_key ASC
-            """,
-            (repo,),
-        ).fetchall()
-    ]
+    checkpoints: list[dict[str, Any]] = []
+    if _sqlite_object_exists(conn, "ingest_checkpoints", "table"):
+        checkpoints = [
+            {
+                "source_key": row[0],
+                "cursor": row[1],
+                "file_inode": row[2],
+                "file_size": row[3],
+                "file_mtime": row[4],
+                "updated_at": row[5],
+            }
+            for row in conn.execute(
+                """
+                SELECT source_key, cursor, file_inode, file_size, file_mtime, updated_at
+                FROM ingest_checkpoints
+                WHERE repo = ?
+                ORDER BY source_key ASC
+                """,
+                (repo,),
+            ).fetchall()
+        ]
     return {
         "repo": repo,
         "db_path": db_path(repo),
         "counts": counts,
         "checkpoints": checkpoints,
+        "migration_required": bool(legacy_missing),
+        "legacy_schema_missing": legacy_missing,
     }
 
 
@@ -2012,6 +2159,36 @@ def parser() -> argparse.ArgumentParser:
                 claude_home=a.claude_home,
                 codex_home=a.codex_home,
                 events=a.events if os.path.isabs(a.events) else os.path.join(repo_root(a.repo), a.events),
+            )
+        )
+    )
+
+    p_migrate = sp.add_parser("migrate", help="Upgrade legacy telemetry DBs in place and ingest current sources.")
+    p_migrate.add_argument("--repo", default=".")
+    p_migrate.add_argument("--claude-home", default=os.path.expanduser("~/.claude"))
+    p_migrate.add_argument("--codex-home", default=os.path.expanduser("~/.codex"))
+    p_migrate.add_argument(
+        "--events",
+        default=".claude/agent-events.jsonl",
+        help="repo-relative or absolute path to orchestrator event log",
+    )
+    p_migrate.add_argument(
+        "--extra-events",
+        action="append",
+        default=[],
+        help="additional repo-relative or absolute event logs to merge during migration",
+    )
+    p_migrate.set_defaults(
+        func=lambda a: cmd_migrate(
+            argparse.Namespace(
+                repo=a.repo,
+                claude_home=a.claude_home,
+                codex_home=a.codex_home,
+                events=a.events if os.path.isabs(a.events) else os.path.join(repo_root(a.repo), a.events),
+                extra_events=[
+                    path if os.path.isabs(path) else os.path.join(repo_root(a.repo), path)
+                    for path in a.extra_events
+                ],
             )
         )
     )

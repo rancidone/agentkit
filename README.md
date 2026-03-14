@@ -89,6 +89,7 @@ Lower-level backend utilities remain available for debugging and smoke checks:
 ./agent-index build --repo . --mode full
 ./agent-index pack --repo . --task "implement SSE endpoint" --out /tmp/pack.json
 ./agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl "$HOME/.codex"
+./agent-telemetry migrate --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl
 ./agent-telemetry-report . 7
 ./agent-telemetry-hotspots . 7 12
 ./agent-telemetry rebuild --repo . --claude-home "$HOME/.claude" --codex-home "$HOME/.codex" --events .claude/agent-events.jsonl
@@ -99,10 +100,12 @@ Lower-level backend utilities remain available for debugging and smoke checks:
 ## Telemetry Ingest Model
 
 - `agent-telemetry ingest` is incremental and non-destructive.
+- `agent-telemetry migrate` upgrades legacy telemetry DBs in place, recomputes derived tables, and can merge additional legacy event logs.
 - Checkpoints are tracked per source log so reruns only process new records.
 - Writes are serialized by a per-repo writer lease, allowing concurrent Codex/Claude callers without DB lock races.
 - `agent-telemetry rebuild` is the maintenance path for full reset + recompute.
 - `agent-telemetry-ingest` auto-detects the active runner environment: Codex ingests Codex logs, Claude ingests Claude logs, and explicit overrides can use `AGENTKIT_TELEMETRY_SCOPE=codex|claude|all`.
+- If `report`, `trend`, `hotspots`, or `task` says the repo is on a legacy telemetry schema, run `agent-telemetry migrate --repo /path/to/repo` before reporting.
 
 ## Task Event Logging (KPI Wiring)
 

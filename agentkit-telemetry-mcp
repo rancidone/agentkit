@@ -14,6 +14,7 @@ from agent_telemetry_backend import (
     ingest_telemetry,
     inspect_telemetry,
     inspect_task_run,
+    migrate_telemetry,
     report_telemetry,
     trend_telemetry,
 )
@@ -47,6 +48,21 @@ def _handle_ingest(arguments: dict[str, Any]) -> dict[str, Any]:
         str(arguments.get("claude_home", os.path.expanduser("~/.claude"))),
         str(arguments.get("codex_home", os.path.expanduser("~/.codex"))),
         _events_path(repo, arguments),
+    )
+
+
+def _handle_migrate(arguments: dict[str, Any]) -> dict[str, Any]:
+    repo = repo_root(str(arguments.get("repo", ".")))
+    extra_events = [
+        path if os.path.isabs(path) else os.path.join(repo, path)
+        for path in arguments.get("extra_events", []) or []
+    ]
+    return migrate_telemetry(
+        repo,
+        str(arguments.get("claude_home", os.path.expanduser("~/.claude"))),
+        str(arguments.get("codex_home", os.path.expanduser("~/.codex"))),
+        _events_path(repo, arguments),
+        extra_events,
     )
 
 
@@ -86,6 +102,24 @@ def _handle_task_inspect(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _tools() -> list[ToolDefinition]:
     return [
+        ToolDefinition(
+            "telemetry.migrate",
+            "Upgrade a legacy telemetry DB in place and merge current telemetry sources.",
+            {
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string"},
+                    "claude_home": {"type": "string"},
+                    "codex_home": {"type": "string"},
+                    "events": {"type": "string"},
+                    "extra_events": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+            _handle_migrate,
+        ),
         ToolDefinition(
             "telemetry.ingest",
             "Ingest usage logs and task events into telemetry state.",
