@@ -12,9 +12,19 @@ Agentkit is a framework-neutral CLI tooling suite for coding-agent workflows. It
 
 Follow [MIGRATION.md](/home/maddie/repos/agentkit/MIGRATION.md) during the MCP transition.
 
-This repo must keep using agentkit to execute its own `TODO.md` workflow throughout the migration. Until MCP plus skills reach workflow parity, preserve the minimum in-repo compatibility path needed for this repository to keep running `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report` against itself.
+This repo must keep using agentkit to execute its own `TODO.md` workflow throughout the migration. The repo-local hard switch is complete: use the MCP-backed skills as the primary path for `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`, with scoped local helpers retained only where MCP parity is intentionally incomplete.
 
-## Common Commands
+## Skills-First Workflow
+
+Use the MCP-backed skills as the primary workflow surface for this repository.
+
+- Materialize repo-local MCP configs from `examples/codex-mcp-servers.repo-local.example.json` and `examples/claude-mcp-servers.repo-local.example.json`.
+- Keep writable state in `.agentkit/state` through `AGENTKIT_STATE_DIR`.
+- Run `agentkit-todo-codex` or `agentkit-todo-claude` for `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+
+## Local Helper Commands
+
+Keep these `just` recipes and wrappers for debugging, narrow helper tasks, and migration gaps. They are not a supported primary install surface.
 
 ```bash
 just --list                          # show all available recipes
@@ -77,6 +87,8 @@ Install the managed MCP config artifacts and both skill packages globally:
 ./agent-install
 ```
 
+For this repository's own dogfood workflow, prefer the repo-local MCP examples under `examples/` over global install state whenever you are testing migration behavior in-place.
+
 Remove only agentkit-managed install artifacts with:
 ```bash
 ./agent-uninstall
@@ -123,7 +135,17 @@ The agentkit SQLite databases still live in `~/.claude/tools/agentkit/state/`. I
 
 This avoids one-off `python3 -c "..."` debug scripts for every query. Without it, use `python3 -c "import sqlite3; ..."` directly against the DB path from `agentkit_common.default_state_dir()`.
 
+## Repo-Local MCP Dogfood Config
+
+While this repository is migrating, keep a repo-local dev path that does not depend on user-home MCP config or state directories.
+
+- Codex example: `examples/codex-mcp-servers.repo-local.example.json`
+- Claude example: `examples/claude-mcp-servers.repo-local.example.json`
+- Repo-local writable state dir: `.agentkit/state`
+
+Materialize those examples into `.codex/agentkit/mcp-servers.json` and `.claude/agentkit/mcp-servers.json` with `__REPO_ROOT__` replaced by the absolute repo path. Both examples set `AGENTKIT_STATE_DIR` to `$REPO_ROOT/.agentkit/state` so repo and telemetry MCP operations stay writable during dogfooding.
+
 ## start-todo Execution Model
 
 Default mode is **tasks-first**: execute tasks directly in-session with lifecycle logging. Escalate to worker-branch only when the heuristic passes: at least 2 independent tasks from current phase, each medium or high complexity. In tasks-first mode, only `task-started`/`task-completed`/`task-failed` events are logged — no synthetic worker events. Never merge into `main` or `develop` from `start-todo`.
-While MCP migration is in progress, this workflow is also part of the required repo-local compatibility path for self-dogfooding; do not remove it before the MCP-backed replacement reaches parity for this repository.
+The repo-local hard switch is complete for self-dogfooding. Keep temporary local helpers only for workflow gaps that are still intentionally outside the MCP surface.

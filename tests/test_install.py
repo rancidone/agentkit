@@ -62,7 +62,7 @@ class TestAgentInstall(unittest.TestCase):
             self.assertIn("agentkit-repo-mcp", codex_payload["mcpServers"])
             self.assertIn("agentkit-telemetry-mcp", codex_payload["mcpServers"])
 
-    def test_legacy_wrapper_install_requires_explicit_flag(self):
+    def test_install_rejects_legacy_wrapper_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             codex_home = tmp_path / "codex"
@@ -76,16 +76,15 @@ class TestAgentInstall(unittest.TestCase):
                 "XDG_DATA_HOME": str(xdg_data_home),
             }
 
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, AGENT_INSTALL, "--repo-root", str(REPO_ROOT), "--legacy-bin-dir", str(bin_dir)],
                 capture_output=True,
                 text=True,
-                check=True,
                 env=env,
             )
-            manifest = json.loads((xdg_data_home / "agentkit" / "install-manifest.json").read_text(encoding="utf-8"))
-            self.assertTrue(any(artifact["type"] == "legacy_wrapper_link" for artifact in manifest["artifacts"]))
-            self.assertTrue((bin_dir / "agentkit").is_symlink())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unrecognized arguments: --legacy-bin-dir", result.stderr)
+            self.assertFalse((xdg_data_home / "agentkit" / "install-manifest.json").exists())
 
     def test_deprecated_global_tools_shim_no_longer_installs_wrappers(self):
         with tempfile.TemporaryDirectory() as tmp:

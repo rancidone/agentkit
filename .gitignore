@@ -29,6 +29,8 @@ pip-wheel-metadata/
 *.db
 *.sqlite
 *.sqlite3
+.agentkit/*
+!.agentkit/.gitignore
 
 # VS Code
 .vscode/

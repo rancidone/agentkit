@@ -116,7 +116,6 @@ def install_agentkit(
     repo_root: Path,
     codex_home: Path,
     claude_home: Path,
-    legacy_bin_dir: Path | None = None,
 ) -> dict[str, Any]:
     codex_skill = codex_home / "skills" / "agentkit-todo-codex"
     claude_skill = claude_home / "skills" / "agentkit-todo-claude"
@@ -138,17 +137,6 @@ def install_agentkit(
         {"type": "managed_config", "path": str(claude_config)},
     ]
 
-    if legacy_bin_dir is not None:
-        legacy_bin_dir.mkdir(parents=True, exist_ok=True)
-        tools = legacy_wrapper_names()
-        for tool in tools:
-            target = repo_root / tool
-            if not target.exists():
-                raise SystemExit(f"missing executable in repo: {tool}")
-            link_path = legacy_bin_dir / tool
-            _symlink(target, link_path)
-            artifacts.append({"type": "legacy_wrapper_link", "path": str(link_path), "target": str(target)})
-
     manifest = {
         "schema_version": 1,
         "repo_root": str(repo_root),
@@ -163,7 +151,6 @@ def install_agentkit(
         "claude_skill": str(claude_skill),
         "codex_mcp_config": str(codex_config),
         "claude_mcp_config": str(claude_config),
-        "legacy_bin_dir": str(legacy_bin_dir) if legacy_bin_dir is not None else None,
         "artifacts_recorded": len(artifacts),
     }
 
@@ -236,7 +223,6 @@ def parse_install_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repo-root", default=Path(__file__).resolve().parent)
     parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     parser.add_argument("--claude-home", default=os.environ.get("CLAUDE_HOME", str(Path.home() / ".claude")))
-    parser.add_argument("--legacy-bin-dir")
     return parser.parse_args(argv)
 
 
@@ -254,7 +240,6 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=Path(args.repo_root).resolve(),
         codex_home=Path(args.codex_home).expanduser(),
         claude_home=Path(args.claude_home).expanduser(),
-        legacy_bin_dir=Path(args.legacy_bin_dir).expanduser() if args.legacy_bin_dir else None,
     )
     print(json.dumps(result, indent=2))
     return 0

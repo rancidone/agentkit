@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "agentkit-repo-mcp": {
+      "command": "__REPO_ROOT__/agentkit-repo-mcp",
+      "args": [],
+      "transport": "stdio",
+      "env": {
+        "AGENTKIT_STATE_DIR": "__REPO_ROOT__/.agentkit/state"
+      }
+    },
+    "agentkit-telemetry-mcp": {
+      "command": "__REPO_ROOT__/agentkit-telemetry-mcp",
+      "args": [],
+      "transport": "stdio",
+      "env": {
+        "AGENTKIT_STATE_DIR": "__REPO_ROOT__/.agentkit/state"
+      }
+    }
+  }
+}

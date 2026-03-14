@@ -17,11 +17,11 @@ Framework-neutral CLI tooling for coding-agent workflows.
 
 The active migration contract is documented in [MIGRATION.md](/home/maddie/repos/agentkit/MIGRATION.md).
 
-During the MCP transition, this repository must keep using agentkit to execute its own `TODO.md` workflow. Until MCP plus skills reach workflow parity, retain the minimum in-repo compatibility path required for this repo to keep dogfooding `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+During the MCP transition, this repository must keep using agentkit to execute its own `TODO.md` workflow. The repo-local hard switch is now complete: this repo dogfoods `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report` through MCP-backed skills, with scoped local helpers retained only where MCP parity is still intentionally incomplete.
 
 ## MCP Backend Split
 
-Phase 1 establishes an explicit two-service backend split without removing the existing wrapper-based compatibility path:
+Phase 1 establishes an explicit two-service backend split while moving the repo's documented dogfood workflow to MCP-backed skills first:
 
 - `agentkit-repo-mcp` owns repo, index, context pack, and repo-config operations.
 - `agentkit-telemetry-mcp` owns telemetry ingestion/reporting, state handling, and task lifecycle logging.
@@ -33,7 +33,12 @@ Bootstrap entrypoints are available now:
 ./agentkit-telemetry-mcp
 ```
 
-At this stage the current `agent-*` wrappers remain the supported dogfooding path for this repository until the MCP-backed skills reach workflow parity.
+The repo-local dogfood path is now:
+
+1. Repo-local Codex or Claude config points at `agentkit-repo-mcp` and `agentkit-telemetry-mcp`.
+2. The `agentkit-todo-codex` or `agentkit-todo-claude` skill orchestrates `start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+3. Scoped local helpers remain allowed only for gaps that are not yet served directly from MCP, such as session-branch creation, commit helpers, and direct repo-local test execution.
+
 The shared backend logic now lives in importable modules, with `agent-index` delegating to `agent_index_cli` over `agent_index_backend`, and `agent-telemetry` delegating to `agent_telemetry_backend`.
 Phase 1 keeps the current SQLite state layout and repo config lookup unchanged: DB files still resolve from `agentkit_common.default_state_dir()`, and repo config still loads from `.claude/agentkit.json` first with `agentkit.json` as the fallback.
 
@@ -49,13 +54,40 @@ Current inspect-oriented MCP tools include:
 - Python 3.10+
 - Git (for repository detection)
 
-## Quick Start
+## Repo-Local Skills-First Dogfooding
+
+```bash
+mkdir -p .agentkit/state .codex/agentkit .claude/agentkit
+REPO_ROOT="$PWD"
+sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/codex-mcp-servers.repo-local.example.json > .codex/agentkit/mcp-servers.json
+sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/claude-mcp-servers.repo-local.example.json > .claude/agentkit/mcp-servers.json
+```
+
+After those repo-local client configs are in place, run the TODO workflow through the client skill surface:
+
+- Codex: `agentkit-todo-codex start-todo`
+- Claude: `agentkit-todo-claude start-todo`
+
+Use the same skills for `next`, `check`, `validate`, `prompt`, `index-refresh`, and `telemetry-report`.
+The repo-local examples keep `AGENTKIT_STATE_DIR` inside `.agentkit/state`, so dogfooding does not depend on user-home writable state directories.
+
+## Local Helper Fallbacks
+
+The hard switch for this repository is complete. These lower-level commands remain for debugging and narrowly scoped helper use, not as a supported primary install surface.
+
+```bash
+just setup
+just context-pack "implement SSE endpoint" /tmp/pack.json
+just task-started phase4-fw todo/20260308-130742 "Implement SSE endpoint wiring"
+just task-completed phase4-fw todo/20260308-130742
+just observe
+```
+
+Lower-level backend utilities remain available for debugging and smoke checks:
 
 ```bash
 ./agent-index build --repo . --mode full
 ./agent-index pack --repo . --task "implement SSE endpoint" --out /tmp/pack.json
-
-./agent-index-refresh-light .
 ./agent-telemetry-ingest . "$HOME/.claude" .claude/agent-events.jsonl "$HOME/.codex"
 ./agent-telemetry-report . 7
 ./agent-telemetry-hotspots . 7 12
@@ -209,7 +241,7 @@ This skill is the supported user-facing orchestration entrypoint for the TODO wo
 It mirrors the existing TODO execution workflow (`start-todo`, `next`, `check`, `validate`, `prompt`, `index-refresh`, `telemetry-report`) and now treats MCP tools as the primary repo, telemetry, and task lifecycle interface.
 The `start-todo` orchestration defaults to tasks-first execution, and only escalates to worker-branch flow when multiple independent medium/high-complexity tasks justify it.
 In tasks-first mode, lifecycle logging stays task-scoped (`task-started`, `task-completed`, `task-failed`) without synthetic worker events.
-This skill remains part of the required compatibility path while the repo migrates to MCP-backed orchestration for its own dogfooding workflow.
+This skill is the supported dogfooding entrypoint for this repository's own MCP-backed TODO workflow.
 The MCP-first skill flow preserves the repo's current self-dogfooding semantics: tasks-first stays the default, task lifecycle logging remains available for repo self-use, and index/telemetry refresh steps remain part of TODO execution.
 During rollout, the `start-todo` spec continues to target this repository's own `TODO.md`, `.claude/agent-events.jsonl`, and `todo/*` session branches so the repo can keep implementing itself through the migration.
 
@@ -230,13 +262,16 @@ For non-default install location:
 ./agent-install --codex-home /custom/codex --claude-home /custom/claude
 ```
 
-Optional legacy wrapper compatibility install:
+For repo-local dogfooding while this migration is in progress, point both clients at this checkout and keep state inside the repo:
 
 ```bash
-./agent-install --legacy-bin-dir /custom/bin/dir
+mkdir -p .agentkit/state .codex/agentkit .claude/agentkit
+REPO_ROOT="$PWD"
+sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/codex-mcp-servers.repo-local.example.json > .codex/agentkit/mcp-servers.json
+sed "s|__REPO_ROOT__|${REPO_ROOT}|g" examples/claude-mcp-servers.repo-local.example.json > .claude/agentkit/mcp-servers.json
 ```
 
-This opt-in compatibility mode records wrapper symlinks in the manifest, but the default install flow no longer installs the `agent-*` wrapper fleet into `~/.local/bin`.
+Those examples pin both MCP services to this repository checkout and export `AGENTKIT_STATE_DIR=$REPO_ROOT/.agentkit/state`, which keeps telemetry/index state writable without depending on `~/.claude/tools/agentkit/state` or `~/.local/state/agentkit`.
 
 Remove agentkit-managed install artifacts with:
 
@@ -244,7 +279,7 @@ Remove agentkit-managed install artifacts with:
 ./agent-uninstall
 ```
 
-Default uninstall removes the manifest-recorded skill links, managed MCP config files, and any manifest-managed legacy launch helpers.
+Default uninstall removes the manifest-recorded skill links and managed MCP config files.
 It also performs best-effort cleanup for historical `~/.local/bin` wrapper symlinks and the legacy Codex skill symlink, but only when those symlinks still point at this repository.
 It does not remove telemetry databases, event logs, repo-local data, copied scripts, or other arbitrary user-created files.
 
